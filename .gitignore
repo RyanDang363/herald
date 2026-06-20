@@ -1,6 +1,7 @@
 # Agent / AI tooling
 # .agents/ is committed so teammates/judges get the Pika skills on clone
 .claude/
+.cursor/
 
 # Dependencies
 node_modules/
