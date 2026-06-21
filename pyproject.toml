@@ -1,0 +1,27 @@
+[project]
+name = "er-twin"
+version = "0.1.0"
+description = "ER Room Digital Twin — Fetch.ai uAgents + Bureau + ASI:One"
+requires-python = ">=3.11"
+dependencies = [
+    "uagents",
+    "uagents-core",
+    "pydantic-settings",
+    "redis",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -28,6 +28,38 @@ Emergency rooms operate in controlled chaos — every room, patient, nurse, doct
 
 ---
 
+## Getting Started
+
+**Prerequisites:** Python 3.11+, [`uv`](https://docs.astral.sh/uv/) (`brew install uv`).
+
+```bash
+# 1. Clone and enter the repo
+git clone https://github.com/RyanDang363/berk-ai-hackathon.git
+cd berk-ai-hackathon
+
+# 2. Set up environment variables
+cp .env.example .env
+# Edit .env — for a no-API-key local run, leave USE_MOCK=true
+
+# 3. Install dependencies (creates a local .venv)
+uv sync
+
+# 4. Run the Bureau (mock mode — no ASI:One key needed)
+USE_MOCK=true uv run python -m er_twin.main
+
+# 5. Run the tests
+uv run pytest
+```
+
+**Mock mode:** with `USE_MOCK=true` the Orchestrator returns hardcoded responses (see the
+`USE_MOCK` contract in [docs/TEAM.md](docs/TEAM.md)), so you can build and test without an
+`ASIONE_API_KEY`. Set `USE_MOCK=false` and add your key to use the real ASI:One LLM.
+
+**Who builds what:** see [docs/TEAM.md](docs/TEAM.md) for the ownership map and git workflow, and
+[STATUS.md](STATUS.md) for live progress.
+
+---
+
 ## Core Problem
 
 Emergency rooms suffer from cascading inefficiencies caused by static, reactive coordination:
