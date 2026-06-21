@@ -13,6 +13,7 @@ class PatientIntakeRequest(Model):
     name: str
     chief_complaint: str
     vitals: dict
+    mrn: str = ""  # MRN from chat; blank → AdmissionsAgent calls next_mrn() via build_live_record
 
 
 class PatientIntakeResponse(Model):

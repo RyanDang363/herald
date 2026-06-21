@@ -49,6 +49,12 @@
       "skillPath": "skills/founder-product-video/SKILL.md",
       "computedHash": "1599e80f082c76d56252a259ae1e61e8bc0597ebdae938db10eeeefc434b4b86"
     },
+    "iris-development": {
+      "source": "redis/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/iris-development/SKILL.md",
+      "computedHash": "677663bc77ea89c1ba7de7ced05a2d0f16bbe7b5e75efa47a10a40091eeb039d"
+    },
     "kiss-cam": {
       "source": "Pika-Labs/Pika-Plugins",
       "sourceType": "github",
@@ -72,6 +78,24 @@
       "sourceType": "github",
       "skillPath": "skills/podcast/SKILL.md",
       "computedHash": "e309cdd20c68c97c7b948020b19c36f2c47fecee0acf1c19d9aa3d996c6c9c35"
+    },
+    "redis-connections": {
+      "source": "redis/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/redis-connections/SKILL.md",
+      "computedHash": "3755d60acb0c484a44c4bef547340cc889e7f803f5dcedcd3bf767878b12c428"
+    },
+    "redis-core": {
+      "source": "redis/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/redis-core/SKILL.md",
+      "computedHash": "5b342de2555699d1785335711883711ff6ef7e213a1ea57d6bf693184a5c8683"
+    },
+    "redis-vector-search": {
+      "source": "redis/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/redis-vector-search/SKILL.md",
+      "computedHash": "2646c61374641845a5fa81b76319d60a4556a229e79eed54fc6f0faf376cddce"
     },
     "ugc-ads": {
       "source": "Pika-Labs/Pika-Plugins",

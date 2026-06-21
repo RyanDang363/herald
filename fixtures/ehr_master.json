@@ -1,0 +1,306 @@
+{
+  "MRN-0001": {
+    "mrn": "MRN-0001",
+    "name": "Casey Lee",
+    "birthdate": "1975-04-08",
+    "gender": "F",
+    "medications": [],
+    "conditions": [],
+    "allergies": []
+  },
+  "MRN-0002": {
+    "mrn": "MRN-0002",
+    "name": "Casey Martin",
+    "birthdate": "1951-10-14",
+    "gender": "M",
+    "medications": [
+      "metformin"
+    ],
+    "conditions": [
+      "type 2 diabetes"
+    ],
+    "allergies": [
+      "penicillin"
+    ]
+  },
+  "MRN-0003": {
+    "mrn": "MRN-0003",
+    "name": "Jordan Patel",
+    "birthdate": "1967-04-17",
+    "gender": "M",
+    "medications": [
+      "lisinopril",
+      "atorvastatin"
+    ],
+    "conditions": [
+      "hypertension"
+    ],
+    "allergies": [
+      "sulfa drugs"
+    ]
+  },
+  "MRN-0004": {
+    "mrn": "MRN-0004",
+    "name": "Jordan Martin",
+    "birthdate": "1965-12-21",
+    "gender": "M",
+    "medications": [
+      "warfarin",
+      "metoprolol"
+    ],
+    "conditions": [
+      "atrial fibrillation"
+    ],
+    "allergies": [
+      "aspirin"
+    ]
+  },
+  "MRN-0005": {
+    "mrn": "MRN-0005",
+    "name": "Sage Brown",
+    "birthdate": "1997-10-09",
+    "gender": "M",
+    "medications": [
+      "amlodipine"
+    ],
+    "conditions": [
+      "asthma"
+    ],
+    "allergies": [
+      "codeine"
+    ]
+  },
+  "MRN-0006": {
+    "mrn": "MRN-0006",
+    "name": "Avery Anderson",
+    "birthdate": "1983-05-05",
+    "gender": "F",
+    "medications": [
+      "levothyroxine"
+    ],
+    "conditions": [
+      "hypothyroidism"
+    ],
+    "allergies": [
+      "latex"
+    ]
+  },
+  "MRN-0007": {
+    "mrn": "MRN-0007",
+    "name": "Reese Garcia",
+    "birthdate": "1951-07-04",
+    "gender": "M",
+    "medications": [
+      "omeprazole",
+      "sertraline"
+    ],
+    "conditions": [
+      "gastroesophageal reflux disease"
+    ],
+    "allergies": [
+      "penicillin",
+      "cephalosporins"
+    ]
+  },
+  "MRN-0008": {
+    "mrn": "MRN-0008",
+    "name": "Emery White",
+    "birthdate": "1973-01-24",
+    "gender": "F",
+    "medications": [
+      "albuterol"
+    ],
+    "conditions": [
+      "chronic obstructive pulmonary disease"
+    ],
+    "allergies": [
+      "ibuprofen"
+    ]
+  },
+  "MRN-0009": {
+    "mrn": "MRN-0009",
+    "name": "Cameron Garcia",
+    "birthdate": "1988-02-18",
+    "gender": "M",
+    "medications": [
+      "metoprolol",
+      "furosemide",
+      "aspirin"
+    ],
+    "conditions": [
+      "heart failure",
+      "hypertension"
+    ],
+    "allergies": []
+  },
+  "MRN-0010": {
+    "mrn": "MRN-0010",
+    "name": "Alex Moore",
+    "birthdate": "1964-12-03",
+    "gender": "M",
+    "medications": [
+      "gabapentin",
+      "duloxetine"
+    ],
+    "conditions": [
+      "chronic pain",
+      "depression"
+    ],
+    "allergies": [
+      "shellfish"
+    ]
+  },
+  "MRN-0011": {
+    "mrn": "MRN-0011",
+    "name": "Drew Miller",
+    "birthdate": "1950-04-28",
+    "gender": "M",
+    "medications": [
+      "prednisone"
+    ],
+    "conditions": [
+      "rheumatoid arthritis"
+    ],
+    "allergies": [
+      "peanuts"
+    ]
+  },
+  "MRN-0012": {
+    "mrn": "MRN-0012",
+    "name": "Dakota Davis",
+    "birthdate": "1998-11-27",
+    "gender": "M",
+    "medications": [
+      "insulin glargine",
+      "metformin"
+    ],
+    "conditions": [
+      "type 1 diabetes"
+    ],
+    "allergies": [
+      "amoxicillin"
+    ]
+  },
+  "MRN-0013": {
+    "mrn": "MRN-0013",
+    "name": "Avery Moore",
+    "birthdate": "1985-04-22",
+    "gender": "M",
+    "medications": [
+      "clopidogrel",
+      "atorvastatin",
+      "aspirin"
+    ],
+    "conditions": [
+      "coronary artery disease"
+    ],
+    "allergies": []
+  },
+  "MRN-0014": {
+    "mrn": "MRN-0014",
+    "name": "Morgan White",
+    "birthdate": "1961-09-24",
+    "gender": "F",
+    "medications": [
+      "hydrochlorothiazide"
+    ],
+    "conditions": [
+      "hypertension",
+      "obesity"
+    ],
+    "allergies": [
+      "morphine"
+    ]
+  },
+  "MRN-0015": {
+    "mrn": "MRN-0015",
+    "name": "Avery Thomas",
+    "birthdate": "1988-05-21",
+    "gender": "M",
+    "medications": [
+      "montelukast",
+      "fluticasone"
+    ],
+    "conditions": [
+      "asthma",
+      "allergic rhinitis"
+    ],
+    "allergies": [
+      "erythromycin"
+    ]
+  },
+  "MRN-0016": {
+    "mrn": "MRN-0016",
+    "name": "Drew Wilson",
+    "birthdate": "1947-04-27",
+    "gender": "M",
+    "medications": [
+      "rivaroxaban"
+    ],
+    "conditions": [
+      "deep vein thrombosis"
+    ],
+    "allergies": []
+  },
+  "MRN-0017": {
+    "mrn": "MRN-0017",
+    "name": "Reese Taylor",
+    "birthdate": "1974-02-07",
+    "gender": "M",
+    "medications": [
+      "ramipril",
+      "bisoprolol"
+    ],
+    "conditions": [
+      "hypertension",
+      "heart failure"
+    ],
+    "allergies": [
+      "vancomycin"
+    ]
+  },
+  "MRN-0018": {
+    "mrn": "MRN-0018",
+    "name": "Reese Williams",
+    "birthdate": "2003-07-21",
+    "gender": "F",
+    "medications": [
+      "quetiapine"
+    ],
+    "conditions": [
+      "bipolar disorder"
+    ],
+    "allergies": [
+      "contrast dye"
+    ]
+  },
+  "MRN-0019": {
+    "mrn": "MRN-0019",
+    "name": "Riley Davis",
+    "birthdate": "1957-04-24",
+    "gender": "M",
+    "medications": [
+      "tamsulosin"
+    ],
+    "conditions": [
+      "benign prostatic hyperplasia"
+    ],
+    "allergies": []
+  },
+  "MRN-0020": {
+    "mrn": "MRN-0020",
+    "name": "Cameron Davis",
+    "birthdate": "1994-10-13",
+    "gender": "M",
+    "medications": [
+      "esomeprazole",
+      "pantoprazole"
+    ],
+    "conditions": [
+      "peptic ulcer disease"
+    ],
+    "allergies": [
+      "ciprofloxacin"
+    ]
+  }
+}

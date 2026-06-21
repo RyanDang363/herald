@@ -3,7 +3,7 @@
 **Traces to:** [LLD — ER Twin Core](../llds/er-twin-core.lld.md) → [README (HLD)](../../README.md)
 **Status markers:** `[ ]` active gap (not yet implemented) · `[x]` implemented · `[D]` deferred
 
-Spec ID format: `{FEATURE}-{TYPE}-{NNN}`. Features: `ORCH` (orchestrator/chat/system), `INTAKE` (Event 1), `OXY` (Event 2), `SUMM` (Event 3), `REPLAY` (incident replay bridge), `DOMAIN` (cross-cutting invariants). Types: `CHAT`, `LLM`, `SYS`, `SKEL`, `FLOW`, `BIND`, `ERR`, `IDEM`, `STATE`, `LOG`, `BRIEF`.
+Spec ID format: `{FEATURE}-{TYPE}-{NNN}`. Features: `ORCH` (orchestrator/chat/system), `INTAKE` (Event 1), `OXY` (Event 2), `SUMM` (Event 3), `REPLAY` (incident replay bridge), `MEM` (Iris agent memory — Phase 7), `EHR` (master EHR + intake loader — Phase 8), `DOMAIN` (cross-cutting invariants). Types: `CHAT`, `LLM`, `SYS`, `SKEL`, `FLOW`, `BIND`, `ERR`, `IDEM`, `STATE`, `LOG`, `BRIEF`.
 
 ---
 
@@ -110,13 +110,35 @@ uAgents must emit.
 
 ---
 
+## MEM — Agent Memory (Orchestrator, Iris — Phase 7)
+
+- [x] **MEM-FLOW-001** — When the OrchestratorAgent completes any ER event (intake, alert, summary), it shall append a session event to the Iris memory store describing the outcome.
+- [x] **MEM-FLOW-002** — When the OrchestratorAgent resolves a status-summary intent, it shall query long-term memory for relevant prior events and include recalled facts in its LLM prompt context.
+- [x] **MEM-ERR-001** — If `AGENT_MEMORY_*` environment variables are absent or `USE_MOCK` is enabled, then the system shall use `NoopMemory` and shall not call the Iris API.
+- [D] **MEM-IDEM-001** — If `record_event` is called with the same text within the same session, the system shall still append it (session event log is append-only); downstream deduplication is Iris's concern.
+
+---
+
+## EHR — Master EHR + Intake Loader
+
+- [ ] **EHR-FLOW-001** — When the OrchestratorAgent resolves a patient-intake intent and the chat contains an MRN, it shall include that MRN in `PatientIntakeRequest.mrn`; when no MRN is present in the chat, it shall send an empty string and the system shall mint the next sequential MRN at record-build time via `next_mrn()`.
+- [ ] **EHR-FLOW-002** — When the AdmissionsAgent receives a `PatientIntakeRequest`, it shall call `build_live_record(mrn, name, chief_complaint, vitals)` to produce the EHR-enriched record before persisting, so that a returning patient's history (medications, conditions, allergies) is loaded into the live `er:patient:{id}` hash at admission time.
+- [x] **EHR-FLOW-003** — When a patient's MRN is present in the master EHR, `build_live_record` shall populate `record["history"]` with `{medications, conditions, allergies}` and set `record["new_patient"] = False`.
+- [x] **EHR-FLOW-004** — When a patient's MRN is absent from the master EHR, `build_live_record` shall set `record["history"]` to `{medications: [], conditions: [], allergies: []}`, set `record["new_patient"] = True`, and write a stub entry back to the master EHR file (writeback).
+- [x] **EHR-FLOW-005** — When `PatientIntakeRequest.mrn` is empty, `build_live_record` shall mint the next sequential MRN via `next_mrn()` before the lookup, so every admitted patient has a stable chart identity even if they walked in unregistered.
+- [x] **EHR-IDEM-001** — If `register_new_patient` is called with an MRN that already exists in the master EHR, it shall return the existing entry and shall not create a duplicate entry or overwrite existing data.
+- [x] **EHR-IDEM-002** — After `register_new_patient` writes to the master EHR file, `get_ehr_record` called within the same process shall return the newly written entry (cache coherence — the writeback must refresh the in-process cache).
+- [x] **EHR-ERR-001** — If the master EHR file (`fixtures/ehr_master.json`) is missing or unreadable at intake time, `build_live_record` shall treat every patient as new (empty history, `new_patient=True`) and shall not raise an exception.
+
+---
+
 ## DOMAIN — Ubiquitous Invariants
 
 Confirmed domain constraints (DK1–DK3). Enforced by the relevant agents and asserted in tests.
 
 - [x] **DOMAIN-STATE-001** — The system shall not allow a bed to be occupied by more than one patient at a time. *(DK1)* *(P2: `bed.assign_patient_to_bed` rejects a second occupant; idempotent for the same patient)*
 - [x] **DOMAIN-STATE-002** — The system shall not allow a patient to be assigned to more than one bed at a time. *(DK2)* *(P2: `bed.assign_patient_to_bed` rejects a second bed for an already-assigned patient)*
-- [x] **DOMAIN-STATE-003** — If a patient's status is `discharged`, then the system shall not triage that patient without a new intake. *(DK3)* *(P2: `patient.can_triage` returns False for discharged; Triage gates on it in Phase 3)*
+- [x] **DOMAIN-STATE-003** — If a patient's status is `discharged`, then the system shall not triage that patient without a new intake. *(DK3)* *(P2: `patient.can_triage` returns False for discharged; Triage gates on it in Phase 3)* A discharged patient re-admitted under the same MRN is a **new visit** (new `patient_id`) with the same chart reloaded — not a reactivation of the old visit record (see EHR loader, Phase 8).
 
 ---
 

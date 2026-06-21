@@ -3,7 +3,7 @@
 Live progress tracker. Update as phases complete. See
 [implementation plan](docs/plans/2026-06-20-er-twin-core.plan.md) for detail.
 
-**Current blocker:** _none — Phases 0–5 + R + P all landed (69/69 tests pass; `ruff check .` clean). Phase P (Pika MCP automation) scripts written + parse-verified: `scripts/run_pika_identity_check.ps1` (smoke test, fails on non-empty `permission_denials`), `scripts/run_pika_replay.ps1` (brief → CLI w/ explicit `--allowedTools` + `task_status` → `out/pika_result.json`, prints media URL/`task_id`), and `scripts/pika_replay_operator.md` (Alt A automated + Alt B manual VSCode fallback). Pika has no EARS specs by locked decision; the CLI contract lives in LLD §9 + the plan (user-confirmed: proceed on LLD §9). REMAINING = operator action only: run the scripts pre-demo (needs the Claude CLI on PATH + Pika auth; spends credits) and pre-generate the final replay._
+**Current blocker:** _none — INTEGRATION in progress on `integration/assemble-demo`: agent core (Phases 0–5 + R + P) merged with the Redis layer (Phases 6–8: `RedisStore`, Iris memory, EHR loader). Agent core is 69/69 green + `ruff` clean. **Pending integration wiring** (now unblocked): Orchestrator must call `memory.record_event()`/`recall()` (MEM-FLOW-001/002) and extract MRN + `build_live_record()` at intake (EHR-FLOW-001/002) — tracked by the `agent-memory`/`patient-ehr` arrows (PARTIAL). Phase P (Pika automation) scripts written + parse-verified; remaining = operator pre-flight (Claude CLI + Pika auth; spends credits). Dashboard (dev3) merges next._
 **Agents-layer focus (Evan):** Demo readiness — operator pre-flight (`run_pika_*.ps1`) + rehearse the 3 trigger phrases. All build phases (0–5, R, P) DONE; Phase 6 RedisStore + dashboard are other owners. Phases 0–3 DONE: skeleton + entity agents/invariants + patient intake. **Transport decided (hybrid — [decision](docs/decisions/2026-06-20-intake-orchestration-mode.md)):** intake stays in-process/`INTAKE_MODE=direct` (canonical + demo-safe); Phase 4 oxygen is the **mandatory** real-async-messaging showcase; async intake is optional (behind `INTAKE_MODE=async`) only if time allows.
 **Env:** venv pinned to Python 3.12 (3.14 broke `uagents==0.25.2`); pin `requires-python = ">=3.11,<3.13"` in Phase 1.
 **Pika MCP:** ✅ installed (project-scope [.mcp.json](.mcp.json)), authenticated, 5k credits. Headless CLI path verified (needs explicit `--allowedTools`). Automation scripts = Phase P.
@@ -20,8 +20,10 @@ Live progress tracker. Update as phases complete. See
 | 5 | Event 3 — Status summary | **Evan** | **complete** |
 | R | Incident replay bridge (`er:events` log → `out/*.json` + `pika_prompt.md`) — **P4** | **Evan** | **complete** |
 | P | Pika MCP automation (`run_pika_*.ps1` → Claude Code CLI → `out/pika_result.json`) — **P5** | **Evan** | **scripts done** (operator pre-flight pending) |
-| 6 | Redis swap (`RedisStore`), demo scripting — **P6** | redis dev | not started |
-| Stretch | Dashboard (FastAPI + HTML) — **P7** | dashboard dev | not started |
+| 6 | `RedisStore` (hashes + index sets + Streams), `make_store()` factory — **P6** | redis dev | **complete** (merged; integration pending) |
+| 7 | Iris Agent Memory (`IrisMemory`, `NoopMemory`, `make_memory()`), smoke script | redis dev | **complete** (merged; Orchestrator wiring pending — MEM-FLOW-001/002) |
+| 8 | EHR loader (`er_twin/ehr.py`), 20-patient fixture, `scripts/build_ehr.py`, `mrn` on intake | redis dev | **complete** (merged; intake wiring pending — EHR-FLOW-001/002) |
+| Stretch | Dashboard (FastAPI + HTML) — **P7** | dashboard dev | branch `dev3/dashboard` (merge after this) |
 | Stretch | fal.ai fallback (only if Pika MCP fails / time remains) — **P7** | **Evan** | not started |
 
 ## Agents layer — Evan's critical path

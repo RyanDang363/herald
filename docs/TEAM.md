@@ -85,10 +85,13 @@ phrases exact so the demo is deterministic.
 
 | Trigger phrase | Intent | Mock response |
 |---|---|---|
-| `A new patient arrived with chest pain` | intake | `Admitted Jordan Lee (chest pain). Triage ESI-2. Assigned bed-1 + nurse-1; paged Dr. Smith (cardiology).` |
+| `A new patient MRN-0004 arrived with chest pain` | intake | `Admitted Jordan Lee (MRN-0004, chest pain). Triage ESI-2. Assigned bed-1 + nurse-1; paged Dr. Smith (cardiology).` |
+| `A new patient arrived with chest pain` | intake (walk-in, no MRN) | `Admitted walk-in patient (MRN minted). Triage ESI-2. Assigned bed-1 + nurse-1.` |
 | `Bed 3's patient oxygen is dropping` | oxygen | `Low O2 on bed-3 (88%). Dispatched nurse-2 with replacement unit o2-2. ETA ~15s.` |
 | `Show me what's happening in the ER` | summary | `3 patients active, 2 beds occupied, 1 nurse free. No critical alerts.` |
 | `ping` | ping | `pong from stub-agent` |
+
+> **MRN in trigger phrases:** including an MRN lets returning patients have their history loaded automatically. Walk-in triggers (no MRN) are also valid — the system mints a sequential MRN.
 
 The mock response is the *fallback string only*. Real agent handlers still run the actual flow;
 mock just bypasses the LLM intent-resolution call.
@@ -124,3 +127,67 @@ MCP is never called from inside the uAgents runtime, only by the Claude Code CLI
 - After Phase 1: orchestrator chat ping round-trips in-process to the stub in the same Bureau (`python -m er_twin.main`).
 - Hour 16 checkpoint: all 3 events fire end-to-end with `USE_MOCK=true`. Freeze scope; cut anything
   not in the 3-event demo.
+
+## EHR loader handoff (Dev 1 — AdmissionsAgent wiring)
+
+The EHR slice is **done** — `er_twin/ehr.py`, `fixtures/ehr_master.json` (20 patients), and
+`scripts/build_ehr.py` are implemented and all 21 tests pass.
+
+**One-call wiring in AdmissionsAgent's intake handler:**
+
+```python
+from er_twin.ehr import build_live_record, find_active_patient_by_mrn
+
+async def handle_intake(ctx, msg: PatientIntakeRequest, store):
+    # 1. MRN dedupe — don't create a second record for an active visit.
+    existing_id = find_active_patient_by_mrn(store, msg.mrn)
+    if existing_id:
+        return PatientIntakeResponse(patient_id=existing_id, record=store.get(f"er:patient:{existing_id}"))
+
+    # 2. Build EHR-enriched record (mrn, history, new_patient — no patient_id/status yet).
+    record = build_live_record(msg.mrn, msg.name, msg.chief_complaint, msg.vitals)
+
+    # 3. Assign visit identity and persist.
+    patient_id = _next_patient_id(store)           # your sequential id logic
+    record["patient_id"] = patient_id
+    record["status"] = "waiting"
+    record["id"] = patient_id
+    store.set(f"er:patient:{patient_id}", record)
+
+    return PatientIntakeResponse(patient_id=patient_id, record=record)
+```
+
+Key rules:
+- `build_live_record` populates `mrn`/`history`/`new_patient` but **not** `patient_id`/`status`.
+- `find_active_patient_by_mrn` works on both `InMemoryStore` and `RedisStore` through the `StorageInterface`.
+- The EHR loader **always runs** (local file IO) — it is not affected by `USE_MOCK`.
+- For walk-in patients (no MRN in chat), pass `mrn=""` and the system mints one automatically.
+
+**EHR master fixture:** `fixtures/ehr_master.json` has 20 pre-loaded patients (`MRN-0001`..`MRN-0020`).
+Use any MRN in that range in your demo trigger phrase to see a returning patient with full history.
+
+**Verification:** `uv run pytest tests/test_ehr.py` — 21 tests, all offline.
+
+## Redis layer handoff (Dev 1 — agents wiring)
+
+Phases 6 + 7 are **done** — `RedisStore`, `make_store()`, `IrisMemory`, `NoopMemory`, and
+`make_memory()` are all implemented and smoke-tested against Redis Cloud.
+
+**One-line wiring in the Orchestrator and agents:**
+
+```python
+# In er_twin/agents/orchestrator.py (Dev 1 adds this)
+from er_twin.storage import make_store
+from er_twin.memory import make_memory
+
+store = make_store()    # RedisStore when REDIS_URL set, InMemoryStore otherwise
+memory = make_memory()  # IrisMemory when AGENT_MEMORY_* set, NoopMemory otherwise
+```
+
+Then call:
+- `store.set("er:patient:p1", {...})` / `store.get(...)` / `store.update(...)` in handlers
+- `store.publish("er:events", json.dumps({...}))` after each completed ER event
+- `memory.record_event("Jordan admitted to bed1 with chest pain")` after each event
+- `memory.recall("recent oxygen alerts")` in the status summary handler
+
+**Verification:** `uv run python scripts/redis_smoke.py` → all four checks must be OK before the demo.

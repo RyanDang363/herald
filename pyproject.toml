@@ -8,6 +8,7 @@ dependencies = [
     "uagents-core",
     "pydantic-settings",
     "redis",
+    "redis-agent-memory",
 ]
 
 [dependency-groups]
