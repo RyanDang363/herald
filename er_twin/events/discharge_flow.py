@@ -132,11 +132,17 @@ def commit_discharge(
 
 
 def release_patient_resources(store: StorageInterface, patient_id: str) -> None:
-    """Free bed, nurse, and doctor tied to a discharged patient.
+    """Free every resource tied to a discharged patient, then retire the patient record itself.
 
     Staff are released by the union of the patient's ``care_team`` AND any nurse/doctor whose own
     ``assignments`` still reference this patient. Relying on ``care_team`` alone leaks staff whenever
     the two drift apart (e.g. a hand-seeded baseline that lists a doctor but not the assigned nurse).
+
+    After the bed/staff are freed the patient leaves the ER: its pool slot is released and the clinical
+    record is deleted. This keeps discharged rows from accumulating in the store (where the map/cards
+    would otherwise have to keep filtering them) and frees a slot for the next admission. The discharge
+    incident is already archived to the event log + replay snapshots before resolve calls this, so the
+    history is preserved independently of the live record.
     """
     rec = store.get(patient.patient_key(patient_id))
 
@@ -155,3 +161,8 @@ def release_patient_resources(store: StorageInterface, patient_id: str) -> None:
     bed_id = rec.get("assigned_bed")
     if bed_id:
         bed.release_bed(store, bed_id)
+
+    # Retire the patient: free the pool slot, then delete the record (done last so the staff/bed
+    # releases above can still read the patient's assigned_bed).
+    patient.release_slot(store, patient_id)
+    store.delete(patient.patient_key(patient_id))

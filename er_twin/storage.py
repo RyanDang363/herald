@@ -33,6 +33,10 @@ class StorageInterface(ABC):
         """Return all ids for an entity type (e.g. `patient` -> ['p1', 'p2'])."""
 
     @abstractmethod
+    def delete(self, key: str) -> None:
+        """Remove the record at `key` and drop it from its entity index (no-op if absent)."""
+
+    @abstractmethod
     def publish(self, channel: str, msg: str) -> None:
         """Append an event line to the feed channel (Stream or in-memory list)."""
 
@@ -56,6 +60,9 @@ class InMemoryStore(StorageInterface):
     def list_ids(self, entity: str) -> list[str]:
         prefix = f"er:{entity}:"
         return [key[len(prefix):] for key in self._data if key.startswith(prefix)]
+
+    def delete(self, key: str) -> None:
+        self._data.pop(key, None)
 
     def publish(self, channel: str, msg: str) -> None:
         self._channels.setdefault(channel, []).append(msg)
@@ -149,6 +156,15 @@ class RedisStore(StorageInterface):
     def list_ids(self, entity: str) -> list[str]:
         # @spec SUMM-FLOW-001
         return list(self._client.smembers(f"er:index:{entity}"))
+
+    def delete(self, key: str) -> None:
+        # DEL + index SREM commit atomically so a deleted record can never linger in its index
+        # (which would make list_ids return a dangling id that get() then resolves to {}).
+        entity, eid = self._entity_and_id(key)
+        pipe = self._client.pipeline(transaction=True)
+        pipe.delete(key)
+        pipe.srem(f"er:index:{entity}", eid)
+        pipe.execute()
 
     def publish(self, channel: str, msg: str) -> None:
         # @spec MEM-FLOW-001 (event feed side)

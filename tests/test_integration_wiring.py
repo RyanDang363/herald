@@ -228,8 +228,10 @@ def test_resolve_command_falls_back_to_mock_on_llm_error(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# ORCH-CHAT-002 — ASI:One prepends an "@agent1..." mention; strip it so downstream
-# exact-match lookups (MOCK_INTAKE) see the operator's actual words.
+# ORCH-CHAT-002 — ASI:One prepends a routing mention; strip it so downstream
+# exact-match lookups (MOCK_INTAKE) and anchored parsers (is_confirm) see the
+# operator's actual words. The mention is the agent's *handle* — either the raw
+# "@agent1..." address or a human handle like "@er-herald" set on Agentverse.
 # ---------------------------------------------------------------------------
 
 _ADDR = "agent1qty576zgxtvhugg4a4gr7pdzrhcq89g78f3kszhmd70a9ftlsamcj6a6h3w"
@@ -240,6 +242,8 @@ _ADDR = "agent1qty576zgxtvhugg4a4gr7pdzrhcq89g78f3kszhmd70a9ftlsamcj6a6h3w"
     (f"  @{_ADDR}   Show me what's happening in the ER", "Show me what's happening in the ER"),
     ("A new patient arrived with chest pain", "A new patient arrived with chest pain"),  # no mention → no-op
     (f"@{_ADDR} ", ""),  # mention only
+    ("@er-herald confirm", "confirm"),  # human handle (Agentverse) — not just the raw address
+    ("@er-herald patient MRN-0006 admitted with chest pain", "patient MRN-0006 admitted with chest pain"),
 ])
 def test_strip_agent_mention(raw, expected):
     # @spec ORCH-CHAT-002 — leading uAgents routing mention removed; otherwise text untouched.
@@ -253,8 +257,57 @@ def test_strip_agent_mention_is_idempotent():
 
 
 def test_strip_agent_mention_keeps_non_agent_at_sign():
-    # @spec ORCH-CHAT-002 — only an "@agent1..." mention is routing noise; a stray '@' stays.
+    # @spec ORCH-CHAT-002 — only a *leading* "@handle " mention is routing noise; a stray mid-text '@' stays.
     assert orchestrator.strip_agent_mention("email me @ noon about chest pain") == "email me @ noon about chest pain"
+
+
+def test_is_confirm_handles_human_handle_mention():
+    # @spec ORCH-CHAT-002 — "confirm" must parse even when ASI:One prepends the "@er-herald" handle,
+    # otherwise the proposal re-prompts forever. (Regression: anchored is_confirm vs leading mention.)
+    from er_twin.events.helpers import is_confirm
+
+    assert is_confirm("@er-herald confirm")
+    assert is_confirm("confirm")
+    assert not is_confirm("@er-herald assign doc1 nurse2 bed3")
+
+
+# ---------------------------------------------------------------------------
+# ORCH-SYS-003 — a confirm-stage proposal must not wedge the session: a brand-new
+# command (MRN + admit/discharge verb) supersedes it instead of being read as a
+# bad "confirm" and re-prompting forever.
+# ---------------------------------------------------------------------------
+
+def _confirm_pending(kind="intake_confirm", event_type="intake"):
+    from er_twin.events.base import PendingProposal
+
+    return PendingProposal(kind=kind, event_type=event_type, sender="s", session_id="sid", mrn="MRN-0006")
+
+
+@pytest.mark.parametrize("text", [
+    "patient MRN-0006 admitted with complaint of chest pain",  # the 12:45 wedge: re-issued admit
+    "admit patient MRN-0007 to bed1",
+    "discharge MRN-0006",                                       # changed mind mid-proposal
+])
+def test_new_command_supersedes_confirm_proposal(text):
+    # @spec ORCH-SYS-003 — a fresh MRN command abandons the stale proposal and dispatches anew.
+    assert orchestrator._supersedes_pending(text, _confirm_pending()) is True
+
+
+@pytest.mark.parametrize("text", [
+    "confirm",                       # a real confirm
+    "assign doc1 nurse2 bed3",       # a valid override
+    "summary",                       # no MRN — not a new patient command
+    "MRN-0006",                      # bare MRN, no admit/discharge verb
+])
+def test_confirm_and_override_do_not_supersede(text):
+    # @spec ORCH-SYS-003 — the happy path (confirm / override / unrelated) still flows to the handler.
+    assert orchestrator._supersedes_pending(text, _confirm_pending()) is False
+
+
+@pytest.mark.parametrize("kind", ["awaiting_mrn", "awaiting_complaint"])
+def test_data_gathering_stages_are_never_superseded(kind):
+    # @spec ORCH-SYS-003 — replies that fill in MRN/complaint may keyword-collide; never supersede them.
+    assert orchestrator._supersedes_pending("admit MRN-0006 chest pain", _confirm_pending(kind=kind)) is False
 
 
 @pytest.mark.parametrize("text", [

@@ -71,6 +71,18 @@ def can_triage(store: StorageInterface, patient_id: str) -> bool:
     return store.get(patient_key(patient_id)).get("status") != "discharged"
 
 
+def release_slot(store: StorageInterface, patient_id: str) -> None:
+    """Free the pool slot bound to `patient_id` so a later intake can reuse it.
+
+    Without this, every discharge leaks one of the fixed `PATIENT_COUNT` slots; after a few
+    discharge→re-admit cycles `find_idle_slot` returns None and intake reports "patient capacity
+    reached" even though the ER is empty. Idempotent: a no-op when no slot owns the patient.
+    """
+    for slot in range(1, PATIENT_COUNT + 1):
+        if store.get(slot_key(slot)).get("bound_to") == patient_id:
+            store.update(slot_key(slot), {"bound_to": None})
+
+
 def build_agents(store: StorageInterface) -> list[Agent]:
     """Create the pool of PatientAgents, each bound to one slot of the shared store."""
     agents: list[Agent] = []

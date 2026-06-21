@@ -12,6 +12,7 @@ from collections import deque
 from pathlib import Path
 
 from er_twin.config import settings
+from er_twin.display import DISPLAY_NAMES
 from er_twin.storage import InMemoryStore, StorageInterface
 ENTITIES: dict[str, str] = {
     "patient": "patients",
@@ -128,14 +129,29 @@ def build_event_buffer(maxlen: int = 50) -> EventBuffer:
 _fixture_buffer: EventBuffer | None = None
 
 
+def _add_display_names(snap: dict) -> dict:
+    """Stamp a presentation `name` on staff records from the canonical DISPLAY_NAMES map.
+
+    Nurse/doctor records only ever store an `id` (e.g. `nurse1`) — the friendly name
+    ("Nurse Maya") lives in `er_twin.display`, the single source of truth shared with chat.
+    Patients already carry a real `name` + `mrn`, so they are left untouched. Mutating the
+    snapshot dicts is safe: both stores return fresh copies from `get()`. @spec DASH-API-001
+    """
+    for plural in ("nurses", "doctors"):
+        for rec in snap.get(plural) or []:
+            if rec and not rec.get("name"):
+                rec["name"] = DISPLAY_NAMES.get(rec.get("id"), rec.get("id"))
+    return snap
+
+
 def live_snapshot() -> dict:
     """Snapshot for the current source — fixture, redis, or the scripted sim. @spec DASH-SIM-001"""
     if settings.dashboard_source == "sim":
         from .sim import controller
 
         state, _ = controller.state_and_events(time.monotonic())
-        return state
-    return snapshot(get_store())
+        return _add_display_names(state)
+    return _add_display_names(snapshot(get_store()))
 
 
 def _event_row(entry_id: str, line: dict) -> dict:

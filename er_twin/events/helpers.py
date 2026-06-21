@@ -7,7 +7,9 @@ import re
 from er_twin.ehr import get_ehr_record
 
 _MRN_RE = re.compile(r"\bMRN-\d+\b", re.IGNORECASE)
-_AGENT_MENTION_RE = re.compile(r"^\s*@agent1[0-9a-z]+\s+", re.IGNORECASE)
+# Leading routing mention: raw "@agent1..." address or a human handle like "@er-herald".
+# Must be generous about the handle form — ASI:One prepends whichever handle is set on Agentverse.
+_AGENT_MENTION_RE = re.compile(r"^\s*@[\w.-]+\s+", re.IGNORECASE)
 _MRN_ONLY_RE = re.compile(r"^\s*MRN-\d+\s*$", re.IGNORECASE)
 
 

@@ -1017,10 +1017,24 @@ header h1 {
   flex: none;
 }
 
+.patient-id-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .patient-name {
   display: block;
   font-size: 21px;
   line-height: 1.05;
+}
+
+.patient-mrn {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted, #8a93a3);
 }
 
 .card-line {

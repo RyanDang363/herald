@@ -179,14 +179,18 @@ def _resolve_via_llm(text: str) -> str:
 # "@agent1qty... A new patient arrived with chest pain"). It's transport-level routing noise: the LLM
 # intent path tolerates it, but exact-match lookups (MOCK_INTAKE) and text parsing (bed id) must see the
 # operator's actual words. Strip a leading uAgents mention (`@agent1...`) at ingestion.
-_AGENT_MENTION_RE = re.compile(r"^\s*@agent1[0-9a-z]+\s+", re.IGNORECASE)
+# Matches a leading mention: the raw "@agent1..." address *or* a human handle like "@er-herald"
+# (handles are set on Agentverse and are what ASI:One actually prepends once one is configured).
+_AGENT_MENTION_RE = re.compile(r"^\s*@[\w.-]+\s+", re.IGNORECASE)
 
 
 def strip_agent_mention(text: str) -> str:
-    """Remove a leading ``@agent1...`` mention that ASI:One prepends when routing chat to an agent.
+    """Remove a leading ``@handle`` mention that ASI:One prepends when routing chat to an agent.
 
-    @spec ORCH-CHAT-002 — the operator's words drive intent + intake payload selection; the routing
-    mention is noise. Idempotent and a no-op when no mention is present.
+    The handle is either the raw ``@agent1...`` address or a human handle (e.g. ``@er-herald``)
+    configured on Agentverse. @spec ORCH-CHAT-002 — the operator's words drive intent + intake
+    payload selection *and* anchored parsers like ``is_confirm``; the routing mention is noise.
+    Idempotent and a no-op when no leading mention is present.
     """
     return _AGENT_MENTION_RE.sub("", text).strip()
 
@@ -648,6 +652,43 @@ async def handle_chat(ctx: Context, sender: str, msg: ChatMessage):
     await _begin_command(ctx, cmd)
 
 
+def _supersedes_pending(text: str, pending) -> bool:
+    """True when `text` is a brand-new command that should replace a confirm-stage proposal.
+
+    Once an intake/discharge proposal is awaiting confirmation, `_begin_command` routes every message
+    to the handler's confirm step. If the operator instead issues a fresh command (an MRN plus an
+    admit/discharge verb), reading it as an invalid "confirm" wedges the session — so we abandon the
+    stale proposal and dispatch the new command. Only the confirm stage is superseded; awaiting_mrn /
+    awaiting_complaint replies (which may keyword-collide with a verb) are left for the handler.
+    @spec ORCH-SYS-003
+    """
+    from er_twin.events.base import PendingProposal
+    from er_twin.events.helpers import is_confirm
+
+    if not isinstance(pending, PendingProposal) or pending.kind not in ("intake_confirm", "discharge_confirm"):
+        return False
+    if is_confirm(text):
+        return False
+    # A new-patient command carries both an MRN and an admit/discharge verb. A bare assignment override
+    # ("assign doc1 nurse2 bed3") has neither, so it stays with the handler — even when it mentions a bed.
+    lowered = text.lower()
+    new_command = any(verb in lowered for verb in ("admit", "discharge", "intake", "new patient"))
+    return bool(extract_mrn(text)) and new_command
+
+
+def _abandon_pending(session_id: str, pending) -> None:
+    """Drop a superseded proposal from session state and cancel its dangling dashboard card."""
+    session_pending.pop(session_id, None)
+    event_id = getattr(pending, "active_event_id", "")
+    if _store is not None and event_id:
+        from er_twin.active_events import _event_key
+
+        try:  # best-effort: a failed cleanup must never block the replacing command.
+            _store.update(_event_key(event_id), {"status": "cancelled"})
+        except Exception:  # noqa: BLE001
+            pass
+
+
 async def _begin_command(ctx: Context, cmd: PendingChatCommand) -> None:
     """Reserve the gate for a fresh flow and dispatch it; finalize now if it completed synchronously."""
     flow_id = _new_flow_id("chat")
@@ -657,6 +698,11 @@ async def _begin_command(ctx: Context, cmd: PendingChatCommand) -> None:
         from er_twin.events.base import PendingProposal
 
         pending = session_pending.get(cmd.session_id)
+        if isinstance(pending, PendingProposal) and _supersedes_pending(cmd.text, pending):
+            # Operator typed a new command instead of confirming — abandon the stale proposal so it
+            # can't swallow every later message as a bad "confirm" (ORCH-SYS-003).
+            _abandon_pending(cmd.session_id, pending)
+            pending = None
         if isinstance(pending, PendingProposal):
             handler = EVENT_REGISTRY.get(pending.event_type)
             if handler is not None:

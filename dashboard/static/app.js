@@ -267,6 +267,7 @@ function renderDetail() {
     sub.textContent = `${record.chief_complaint || "No chief complaint"} · ${record.status || "status unknown"}`;
     body.innerHTML =
       detailSection("Status", [
+        ["MRN", record.mrn || "—"],
         ["Patient ID", record.id],
         ["Acuity", record.acuity != null ? `ESI ${record.acuity}` : "—", acuityTone(record.acuity)],
         ["Bed", record.assigned_bed || "Unassigned"],
@@ -309,10 +310,11 @@ function renderDetail() {
     const floorLocation =
       selected.kind === "doctor" ? doctorFloorLocation(record, currentState.patients || []) : record.location || "nurses-station";
     kicker.textContent = role;
-    title.textContent = record.id;
+    title.textContent = record.name || record.id;
     sub.textContent = `${record.available ? "Available" : "Busy"}${record.location ? ` · ${record.location}` : ""}`;
     body.innerHTML =
       detailSection("Assignment", [
+        [`${role} ID`, record.id],
         ["Role", role.toLowerCase()],
         ["Specialty", record.specialty || "General"],
         ["Location", record.location || "—"],
@@ -1524,6 +1526,9 @@ function renderFloorMap(state) {
     let caption = spec.id;
     if (spec.kind === "patient") {
       const patient = patientsById[spec.id];
+      // A discharged patient has left the floor — drop their marker so it can't linger next to a
+      // re-admitted record (the card list already filters discharged; the map must match it).
+      if (patient && patient.status === "discharged") return;
       if (patient) {
         label = patientMonogram(patient);
         title = `${patient.name || patient.id}: ${patientFloorLabel(patient)}`;
@@ -1616,7 +1621,7 @@ function renderPatients(patients) {
       card.dataset.key = `patient:${p.id}`;
       card.onclick = () => toggleSelection("patient", p.id);
       card.append(
-        el("div", "card-top", `<div class="patient-heading"><span class="patient-icon" aria-hidden="true">${monogram}</span><strong class="patient-name">${p.name || p.id}</strong></div><span class="pill acuity-${p.acuity}">ESI ${p.acuity ?? "—"}</span>`),
+        el("div", "card-top", `<div class="patient-heading"><span class="patient-icon" aria-hidden="true">${monogram}</span><div class="patient-id-stack"><strong class="patient-name">${p.name || p.id}</strong><span class="patient-mrn">${p.mrn || ""}</span></div></div><span class="pill acuity-${p.acuity}">ESI ${p.acuity ?? "—"}</span>`),
         el("div", "card-line", `${p.chief_complaint || "—"} · ${p.status}`),
         el("div", "card-line muted", `HR ${v.hr ?? "—"} · SpO₂ ${v.spo2 ?? "—"} · BP ${v.bp ?? "—"}`),
         el("div", "card-line muted", `Bed ${p.assigned_bed || "—"} · Team ${(p.care_team || []).join(", ") || "—"}`),
@@ -1638,7 +1643,7 @@ function renderStaff(nurses, doctors, patients = []) {
     card.dataset.key = `${type}:${s.id}`;
     card.onclick = () => toggleSelection(type, s.id);
     card.append(
-      el("div", "card-top", `<strong>${s.id}</strong><span class="pill ${free ? "ok" : "busy"}">${free ? "free" : "busy"}</span>`),
+      el("div", "card-top", `<strong>${s.name || s.id}</strong><span class="pill ${free ? "ok" : "busy"}">${free ? "free" : "busy"}</span>`),
       el("div", "card-line muted", `${role}${s.specialty ? " · " + s.specialty : ""}${s.location ? " · " + s.location : ""}`),
       el("div", "card-line muted", `Assigned: ${(s.assignments || []).join(", ") || "—"}`),
       el("div", "card-hint card-map-cue", mapCue)

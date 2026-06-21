@@ -80,3 +80,30 @@ def test_release_patient_resources_frees_staff():
     release_patient_resources(store, outcome["patient_id"])
     assert store.get("er:nurse:nurse1")["available"] is True
     assert store.get("er:bed:bed1")["status"] == "available"
+
+
+def test_resolve_retires_patient_record_and_frees_slot():
+    # @spec DISCHARGE-STATE-001 — on resolve the discharged patient leaves the ER entirely: the
+    # record is deleted and its pool slot is reusable, so discharged rows never accumulate.
+    store = _clean_store()
+    outcome = _admitted_patient(store)
+    patient_id = outcome["patient_id"]
+    mark_discharged(store, patient_id)
+
+    release_patient_resources(store, patient_id)
+
+    assert store.get(patient.patient_key(patient_id)) == {}          # record deleted
+    assert patient_id not in store.list_ids("patient")               # dropped from the index
+    assert patient.find_idle_slot(store) is not None                 # slot freed for re-admission
+
+
+def test_discharge_readmit_cycles_do_not_exhaust_the_pool():
+    # @spec DISCHARGE-STATE-001 / INTAKE-BIND-003 — repeated admit→discharge→resolve of the same MRN
+    # must not leak slots (the original "patient capacity reached" after a few cycles).
+    store = _clean_store()
+    for _ in range(5):
+        outcome = _admitted_patient(store, "MRN-0006")
+        assert outcome.get("error") is None, outcome
+        mark_discharged(store, outcome["patient_id"])
+        release_patient_resources(store, outcome["patient_id"])
+    assert store.list_ids("patient") == []  # nothing left behind after the cycles
