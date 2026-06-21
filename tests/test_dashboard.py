@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from dashboard import datasource
 from dashboard.datasource import build_fixture_store, derive_summary, snapshot
+from dashboard import pika_jobs
 from dashboard import server
 from dashboard.server import app
 
@@ -323,9 +324,9 @@ def test_library_requires_auth(replay_dir):
     assert r.status_code == 303 and r.headers["location"] == "/login"
 
 
-# Empty session library is an empty list, not an error.
+# Empty session library is an empty list, not an error (+ the pika feature flag, default off).
 def test_api_library_empty(auth_client, replay_dir):
-    assert auth_client.get("/api/library").json() == {"incidents": []}
+    assert auth_client.get("/api/library").json() == {"incidents": [], "pika_enabled": False}
 
 
 # A corrupt incident file is skipped, not fatal to the whole library.
@@ -368,3 +369,100 @@ def test_sim_timeline_evolves_and_attributes_agents():
 
     assert len(e1) > len(e0)
     assert {"from", "to", "event", "detail"} <= set(e1[0])
+
+
+# --- On-demand Pika generation (gated, dashboard-orchestrated) -----------------
+# @spec REPLAY-PIKA-003
+
+
+@pytest.fixture
+def pika_on(monkeypatch):
+    """Enable the Pika action and run jobs inline (no thread, no subprocess). Resets the registry."""
+    monkeypatch.setattr(server.settings, "dashboard_allow_pika", True)
+    monkeypatch.setattr(pika_jobs, "_spawn", lambda target: target())  # run the job body synchronously
+    pika_jobs.reset()
+    yield
+    pika_jobs.reset()
+
+
+# The library payload advertises whether the Pika action is available (default: off).
+def test_library_reports_pika_disabled_by_default(auth_client, replay_dir):
+    assert auth_client.get("/api/library").json()["pika_enabled"] is False
+
+
+def test_library_reports_pika_enabled(auth_client, replay_dir, pika_on):
+    assert auth_client.get("/api/library").json()["pika_enabled"] is True
+
+
+# @spec REPLAY-PIKA-003 — generation/status require auth (reuse the dashboard gate), even when disabled
+def test_pika_endpoints_require_auth(replay_dir):
+    assert new_client().post("/api/replay/patient_intake-0001/generate").status_code == 401
+    assert new_client().get("/api/replay/patient_intake-0001/status").status_code == 401
+
+
+# @spec REPLAY-PIKA-003 — disabled by default: an authed operator still gets 403, not a render
+def test_pika_generate_forbidden_when_disabled(auth_client, replay_dir):
+    _write_incident(replay_dir)
+    assert auth_client.post("/api/replay/patient_intake-0001/generate").status_code == 403
+    assert auth_client.get("/api/replay/patient_intake-0001/status").status_code == 403
+
+
+# @spec REPLAY-PIKA-003 — generating for an unknown incident is a 404, not a started job
+def test_pika_generate_missing_incident_404(auth_client, replay_dir, pika_on):
+    assert auth_client.post("/api/replay/does-not-exist/generate").status_code == 404
+
+
+# @spec REPLAY-PIKA-003 — happy path: the job runs, the runner back-writes video_url, job completes,
+# and the library subsequently serves that clip.
+def test_pika_generate_completes_and_clip_appears(auth_client, replay_dir, pika_on, monkeypatch):
+    _write_incident(replay_dir, "patient_intake-0001", video_url=None)
+
+    def fake_runner(incident_id):  # stand-in for capture_replay_frames + run_pika_keyframes.ps1
+        path = replay_dir / f"{incident_id}.json"
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        rec["video_url"] = "https://cdn.pika.test/generated.mp4"
+        path.write_text(json.dumps(rec), encoding="utf-8")
+
+    monkeypatch.setattr(pika_jobs, "default_runner", fake_runner)
+
+    assert auth_client.post("/api/replay/patient_intake-0001/generate").status_code == 202
+    status = auth_client.get("/api/replay/patient_intake-0001/status").json()
+    assert status["status"] == "completed"
+    assert status["video_url"] == "https://cdn.pika.test/generated.mp4"
+    # the clip is now in the file, so the library serves it
+    entry = auth_client.get("/api/library").json()["incidents"][0]
+    assert entry["video_url"] == "https://cdn.pika.test/generated.mp4"
+
+
+# @spec REPLAY-PIKA-003 — a runner that raises marks the job failed (never crashes the worker)
+def test_pika_generate_failure_marks_job_failed(auth_client, replay_dir, pika_on, monkeypatch):
+    _write_incident(replay_dir, "patient_intake-0001", video_url=None)
+
+    def boom(incident_id):
+        raise RuntimeError("pika render exploded")
+
+    monkeypatch.setattr(pika_jobs, "default_runner", boom)
+
+    auth_client.post("/api/replay/patient_intake-0001/generate")
+    status = auth_client.get("/api/replay/patient_intake-0001/status").json()
+    assert status["status"] == "failed"
+    assert "exploded" in status["error"]
+
+
+# @spec REPLAY-PIKA-003 — a runner that finishes without writing a clip is a failure (file is truth)
+def test_pika_generate_no_url_is_failure(auth_client, replay_dir, pika_on, monkeypatch):
+    _write_incident(replay_dir, "patient_intake-0001", video_url=None)
+    monkeypatch.setattr(pika_jobs, "default_runner", lambda incident_id: None)  # writes nothing
+
+    auth_client.post("/api/replay/patient_intake-0001/generate")
+    status = auth_client.get("/api/replay/patient_intake-0001/status").json()
+    assert status["status"] == "failed"
+    assert "video_url" in status["error"]
+
+
+# @spec REPLAY-PIKA-003 — with no job this session, status is "idle" and reports any existing clip
+def test_pika_status_idle_reports_existing_clip(auth_client, replay_dir, pika_on):
+    _write_incident(replay_dir, "patient_intake-0001", video_url="https://cdn.pika.test/old.mp4")
+    status = auth_client.get("/api/replay/patient_intake-0001/status").json()
+    assert status["status"] == "idle"
+    assert status["video_url"] == "https://cdn.pika.test/old.mp4"

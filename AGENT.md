@@ -20,8 +20,9 @@ of spinning up duplicates.
 | Field | Value |
 |---|---|
 | Agent name | **ER Twin Orchestrator** |
-| Handle (set in code) | **`@ERTwin`** — _verify it shows on the Agentverse profile; if taken, fall back to `@EROrchestrator`_ |
+| Handle | **`@er-herald`** (set on the Agentverse profile) |
 | Address (routing identity, **stable**) | `agent1qty576zgxtvhugg4a4gr7pdzrhcq89g78f3kszhmd70a9ftlsamcj6a6h3w` |
+| Public profile README | [`AGENTVERSE_README.md`](AGENTVERSE_README.md) — paste into the Agentverse profile |
 | Only public surface | **OrchestratorAgent** |
 | Private helper agents | Admissions, Triage, Patient pool, Bed, Nurse, Doctor, Equipment |
 
@@ -32,7 +33,7 @@ of spinning up duplicates.
 - `Show me what's happening in the ER`
 
 > The address is the underlying cryptographic identity and never changes (it's derived from the seed).
-> The handle (`@ERTwin`) is the human-friendly, shareable name. Prefer the handle/profile link for
+> The handle (`@er-herald`) is the human-friendly, shareable name. Prefer the handle/profile link for
 > sharing; the address is the reliable fallback until the handle is confirmed live.
 
 ---
@@ -40,17 +41,17 @@ of spinning up duplicates.
 ## How teammates should use the agent
 
 1. Open **ASI:One** (https://asi1.ai/chat).
-2. Search for / select the agent by its **handle** (`@ERTwin`) — or by its **address** if the handle
+2. Search for / select the agent by its **handle** (`@er-herald`) — or by its **address** if the handle
    isn't confirmed yet.
 3. Send one of the three **demo trigger phrases** (above).
 4. When available, use the **shared ASI:One chat URL** to jump straight into a working session.
 5. When available, open the **Agentverse profile URL** to see the agent's profile/README.
 
-Placeholders (fill in before sharing — see the submission checklist at the bottom):
+Links (see the submission checklist at the bottom):
 
-- Agentverse profile URL: **TODO**
-- ASI:One shared chat URL: **TODO**
-- Final handle: **TODO** _(intended: `@ERTwin`)_
+- Final handle: **`@er-herald`** (set on Agentverse)
+- Agentverse profile URL: https://agentverse.ai/agents/details/agent1qty576zgxtvhugg4a4gr7pdzrhcq89g78f3kszhmd70a9ftlsamcj6a6h3w/profile
+- ASI:One shared chat URL: **deferred** — captured LAST, only once all agent decisions/tweaks are finalized (see [`FETCHAI_DELIVERABLES.md`](FETCHAI_DELIVERABLES.md))
 
 ---
 
@@ -148,9 +149,9 @@ ASI:One
 
 ## Updating this file before submission
 
-- [ ] Final handle confirmed on Agentverse (intended: `@ERTwin`)
-- [ ] Agentverse profile URL filled in
-- [ ] ASI:One shared chat URL filled in
+- [x] Final handle confirmed on Agentverse (`@er-herald`)
+- [x] Agentverse profile URL filled in
+- [ ] ASI:One shared chat URL filled in — **deferred** until all agent decisions/tweaks are finalized
 - [ ] Exact run command verified
 - [ ] Exact demo phrases verified
 - [ ] Known fallback path (two-process) verified / documented

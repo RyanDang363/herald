@@ -108,7 +108,7 @@ def test_oxygen_swap_applies_all_mutations():
     assert store.get("er:patient:p2")["vitals"]["spo2"] == 96  # restored
 
     n2 = store.get("er:nurse:nurse2")
-    assert n2["available"] is False and n2["location"] == "bed-3"
+    assert n2["available"] is False and n2["location"] == "bed3"
     assert "oxygen_dispatch:bed3" in n2["assignments"]
 
 

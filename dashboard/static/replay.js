@@ -91,6 +91,22 @@ function specsAt(t) {
   return out;
 }
 
+// Whether any token ever appears/disappears or changes position across the timeline. A deduplicated
+// intake or a status snapshot has identical placements throughout — there is nothing to animate.
+function hasMotion(frames) {
+  if (frames.length < 2) return false;
+  const first = frames[0];
+  for (let i = 1; i < frames.length; i++) {
+    const m = frames[i];
+    if (m.size !== first.size) return true; // a token entered/left the floor
+    for (const [key, spec] of m) {
+      const a = first.get(key);
+      if (!a || Math.abs(a.x - spec.x) > 0.5 || Math.abs(a.y - spec.y) > 0.5) return true;
+    }
+  }
+  return false;
+}
+
 function ensureToken(key, spec) {
   let node = tokenEls.get(key);
   if (!node) {
@@ -252,6 +268,25 @@ async function init() {
 
   renderAt(0);
   exposeApi();
+
+  // Some incidents have nothing to animate: a single point-in-time snapshot (status summary), or
+  // multiple snapshots with identical state (a deduplicated/no-op intake). Render the captured state
+  // but disable the transport and say why — otherwise Play/scrub silently no-op and it looks broken.
+  // @spec REPLAY-FRAME-002
+  if (snapshots.length < 2 || span === 0 || !hasMotion(placements)) {
+    const single = snapshots.length < 2;
+    const playBtn = $("replay-play");
+    playBtn.disabled = true;
+    playBtn.textContent = single ? "Single snapshot" : "No motion";
+    $("replay-scrub").disabled = true;
+    const why = single
+      ? "point-in-time snapshot (status view)"
+      : "no ER state changes (e.g. a duplicate/deduplicated intake)";
+    const base = caption(0);
+    $("replay-caption").textContent = base
+      ? `${base} — ${why}; nothing to play back`
+      : `Nothing to play back — ${why}.`;
+  }
 }
 
 init();

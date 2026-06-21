@@ -108,7 +108,9 @@ if (-not $ClaudeCli -or -not (Test-Path $ClaudeCli)) {
 }
 
 # Upload + keyframes-video generation + async polling. Local PNGs are uploaded first so Pika gets a
-# reachable reference; task_status covers long renders.
+# reachable reference; task_status covers long renders. Bash + Read are required because the upload
+# flow has the agent hash/size the local frame PNGs (stat/sha256sum) and PUT them to the presigned
+# URL — without them the run dies on non-empty permission_denials before any clip is produced.
 $AllowedTools = @(
     'mcp__pika-mcp__identity_whoami',
     'mcp__pika-mcp__identity_balance',
@@ -117,14 +119,19 @@ $AllowedTools = @(
     'mcp__pika-mcp__create_upload_return',
     'mcp__pika-mcp__complete_upload_asset',
     'mcp__pika-mcp__generate_keyframes_video',
-    'mcp__pika-mcp__task_status'
+    'mcp__pika-mcp__task_status',
+    'Bash',
+    'Read'
 ) -join ','
 
 $Prompt = @"
-You are producing a data-grounded ER incident-replay clip for a hackathon demo using Pika MCP.
+You are producing an ER incident-replay clip for a hackathon demo using Pika MCP. FIDELITY OVER FLASH:
+the result must look like the two input images BARELY animated — never a reimagined, 3D, or photoreal scene.
 
-These two PNGs are REAL captured frames of the ER floor map at the start and end of incident
-'$IncidentId' (reconstructed from logged agent state — synthetic data, no real PHI):
+The two PNGs are frames of a flat, 2D, TOP-DOWN SCHEMATIC FLOOR-PLAN ILLUSTRATION of an emergency
+department (clean infographic / architectural-blueprint style; rooms are labeled rectangles — WAITING,
+TRIAGE, MAIN CORRIDOR, NURSE STATION, SUPPLY, TRAUMA and bed bays — and people/equipment are simple
+labeled colored circle markers). Synthetic data, no real PHI.
   - FIRST frame (start state): $firstFrame
   - LAST frame (end state):    $lastFrame
 
@@ -132,9 +139,18 @@ Steps:
 1. If generate_keyframes_video cannot read a local path directly, upload each PNG first (upload_asset)
    and use the returned HTTPS URLs.
 2. Call generate_keyframes_video with first_frame = the start image, last_frame = the end image,
-   duration = $Duration, resolution 720p, and a transition prompt describing smooth, realistic
-   hospital-operations motion between the two real ER states (staff and patient moving into position,
-   clean cinematic camera, no gore, no identifiable real people). Keep it to ONE clip.
+   duration = $Duration, resolution 720p, ONE clip. The transition prompt MUST instruct the model to:
+     - interpolate ONLY the positions of the colored circular markers, gliding smoothly from their
+       first-frame positions to their last-frame positions;
+     - PRESERVE EXACTLY the flat 2D top-down illustrated style, the room rectangles and layout, the
+       walls, the colors, and EVERY text/room label from the inputs — do not redraw, restyle, distort,
+       re-spell, blur, or add/remove any text, rooms, beds, or objects;
+     - hold a LOCKED, perfectly static top-down camera: no pan, no zoom, no tilt, no perspective, no
+       parallax, no 3D, and no lighting or shadow changes;
+     - add NO photorealism and NO realistic human figures — the people stay simple flat circle markers;
+       calm, minimal, schematic motion only.
+   If generate_keyframes_video exposes parameters for motion strength / fidelity / adherence to the
+   input frames, choose values that MINIMIZE invented motion and MAXIMIZE faithfulness to the inputs.
 3. If the render is asynchronous, poll task_status until it completes.
 
 When done, return on its own line: the final media URL, the task_id (if async), the tool used, and a

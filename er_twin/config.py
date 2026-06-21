@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # Dashboard (Dev 3) — read-only baseline
     dashboard_source: str = "fixture"  # "fixture" | "redis"
     dashboard_allow_input: bool = False
+    # When true, the dashboard exposes an authenticated on-demand "Generate clip" action that drives
+    # the offline Pika replay path (capture_replay_frames.py -> run_pika_keyframes.ps1 -> Claude CLI ->
+    # Pika MCP). Off by default: it spends Pika credits and shells out to PowerShell + Chromium. The
+    # er_twin agent runtime still never touches Pika — this lives only on the dashboard ops surface.
+    dashboard_allow_pika: bool = False
     dashboard_port: int = 8050
     # Dashboard auth (demo gate — NOT real HIPAA compliance). Override in .env for anything real.
     dashboard_username: str = "admin"

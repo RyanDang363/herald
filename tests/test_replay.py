@@ -380,6 +380,30 @@ def _keyframe_snapshots() -> list[dict]:
     ]
 
 
+def test_replay_meta_cli_duration_and_safe_video_url(tmp_path, capsys):
+    # @spec REPLAY-LIB-002/003 — the argv helper computes the clamped clip duration and writes video_url
+    # WITHOUT interpolating it into Python source, so a URL containing a single quote round-trips exactly
+    # (the injection/break the inline `python -c` heredoc was vulnerable to).
+    from scripts import replay_meta
+
+    inc = tmp_path / "inc.json"
+    inc.write_text(json.dumps({
+        "start_ts": 0.0, "end_ts": 90.0, "speed_factor": 10, "video_url": None,
+        "snapshots": [{"seq": 0}],
+    }), encoding="utf-8")
+
+    assert replay_meta.main(["replay_meta", "duration", str(inc)]) == 0
+    assert capsys.readouterr().out.strip() == "10"  # 90/10 = 9 -> nearest allowed (10)
+
+    hostile_url = "https://cdn.test/clip-a'b.mp4"  # embedded single quote
+    assert replay_meta.main(["replay_meta", "set-video-url", str(inc), hostile_url]) == 0
+    written = json.loads(inc.read_text(encoding="utf-8"))
+    assert written["video_url"] == hostile_url  # exact, no injection
+    assert written["snapshots"] == [{"seq": 0}]  # rest of the record untouched
+
+    assert replay_meta.main(["replay_meta", "bogus"]) == 2  # unknown command -> nonzero, no crash
+
+
 def test_select_keyframes_drops_unchanged_then_caps_to_start_end():
     # @spec REPLAY-KEY-001 — state-change snapshots, capped at KEYFRAME_CAP (2) -> start + end.
     snaps = _keyframe_snapshots()

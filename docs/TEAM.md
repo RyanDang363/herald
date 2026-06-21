@@ -80,9 +80,11 @@ Phase 0 and merges it to `main` **before** dev 2 and dev 3 start agent code. Unt
 
 ## Shared `USE_MOCK` contract
 
-When `USE_MOCK=true`, the Orchestrator skips the ASI:One LLM and returns these hardcoded responses
-(spec `ORCH-LLM-003`). Lets everyone test agents without an `ASIONE_API_KEY`. Keep the trigger
-phrases exact so the demo is deterministic.
+When `USE_MOCK=true`, the Orchestrator skips the *external* services — keyword intent lookup instead of
+the ASI:One LLM (spec `ORCH-LLM-003`), `InMemoryStore` instead of Redis, `NoopMemory` instead of Iris —
+but still runs the real agent flow over deterministically seeded state. The strings below are
+**illustrative / fallback only** (see the note after the table); the actual replies are state-derived
+and deterministic. Lets everyone test without an `ASIONE_API_KEY`. Keep the trigger phrases exact.
 
 | Trigger phrase | Intent | Mock response |
 |---|---|---|

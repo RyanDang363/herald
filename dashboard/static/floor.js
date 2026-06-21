@@ -259,7 +259,13 @@
       });
 
     nurses.forEach((nurse) => {
-      const pos = reserveFloorPosition(placements, nurse.location || "nurses-station", "nurse");
+      // An assigned nurse stands at their patient's bed (like doctors) so the care team visibly
+      // converges on a new admit during replay; an unassigned nurse stays at their location/station.
+      const assignedPatient = patients.find((p) => (nurse.assignments || []).includes(p.id));
+      const location = assignedPatient && assignedPatient.assigned_bed && BED_LAYOUT[assignedPatient.assigned_bed]
+        ? assignedPatient.assigned_bed
+        : nurse.location || "nurses-station";
+      const pos = reserveFloorPosition(placements, location, "nurse");
       specs.push({ kind: "nurse", id: nurse.id, label: "N", x: pos.x, y: pos.y, cls: nurse.available ? "status-free" : "status-busy", title: `${nurse.id}: ${nurse.available ? "available" : "busy"}` });
     });
 

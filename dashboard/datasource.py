@@ -13,8 +13,6 @@ from pathlib import Path
 
 from er_twin.config import settings
 from er_twin.storage import InMemoryStore, StorageInterface
-
-# Entity type -> snapshot key (plural). Equipment stays "equipment".
 ENTITIES: dict[str, str] = {
     "patient": "patients",
     "bed": "beds",
@@ -183,6 +181,25 @@ def _redis_events(maxlen: int = 50) -> list[dict]:
         rows.append(_event_row(entry_id, line))
     rows.reverse()  # XREVRANGE is newest-first; the feed reads oldest-first.
     return rows
+
+
+def list_active_events_store(store: StorageInterface) -> list[dict]:
+    """Read current (unresolved) events from `er:active_event:*`. @spec RESOLVE-FLOW-001"""
+    from er_twin.active_events import list_active_events
+
+    return list_active_events(store)
+
+
+def active_events_list() -> list[dict]:
+    """Active events for the configured dashboard source."""
+    if settings.dashboard_source == "sim":
+        return []
+    if settings.dashboard_source == "redis":
+        try:
+            return list_active_events_store(get_store())
+        except Exception:  # noqa: BLE001
+            return []
+    return []
 
 
 def current_events() -> list[dict]:

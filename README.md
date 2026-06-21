@@ -59,9 +59,14 @@ USE_MOCK=true uv run python -m er_twin.main
 uv run pytest
 ```
 
-**Mock mode:** with `USE_MOCK=true` the Orchestrator returns hardcoded responses (see the
-`USE_MOCK` contract in [docs/TEAM.md](docs/TEAM.md)), so you can build and test without an
-`ASIONE_API_KEY`. Set `USE_MOCK=false` and add your key to use the real ASI:One LLM.
+**Mock mode:** `USE_MOCK=true` skips the *external* services — deterministic keyword intent lookup
+instead of the ASI:One LLM, `InMemoryStore` instead of Redis, `NoopMemory` instead of Iris — but still
+runs the **real** agent coordination in-process over deterministically seeded state. So replies are
+state-derived (not canned) and reproducible with **no API keys** (see the `USE_MOCK` contract in
+[docs/TEAM.md](docs/TEAM.md)). Set `USE_MOCK=false` (+ keys) for the live ASI:One LLM, Redis, and Iris.
+
+**How it works:** [ARCHITECTURE.md](ARCHITECTURE.md) maps the implemented system — subsystems, the
+three event flows, and the state / memory / replay layers.
 
 **Who builds what:** see [docs/TEAM.md](docs/TEAM.md) for the ownership map and git workflow, and
 [STATUS.md](STATUS.md) for live progress.
@@ -147,7 +152,9 @@ flowchart TD
 The solid path (chat → Orchestrator → in-process Bureau agents → state → event log → brief) is the
 Fetch.ai judging path, all in one process. The dotted path (brief → `run_pika_replay.ps1` → Claude
 Code CLI → Pika MCP → `pika_result.json` + media) is the **automated** creative replay layer. The
-dashboard is stretch-only. (Entity agents are private — only the Orchestrator is on Agentverse.)
+dashboard — originally a stretch goal — is now implemented (read-only FastAPI over the same store,
+plus the data-driven `/replay` and `/library` pages). (Entity agents are private — only the
+Orchestrator is on Agentverse.)
 
 ### Key Architecture Decisions
 
