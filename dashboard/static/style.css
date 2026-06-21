@@ -84,13 +84,15 @@ body.detail-open { overflow: hidden; }
   text-transform: uppercase;
 }
 
-.topbar h1 {
+.topbar h1,
+header h1 {
   margin: 0;
   max-width: none;
   font-family: var(--title-font);
   font-weight: 610;
   font-size: clamp(24px, 2.8vw, 36px);
   line-height: 1;
+  color: var(--ok);
 }
 
 .hero-subline {
@@ -1387,6 +1389,7 @@ body.detail-open { overflow: hidden; }
   font-weight: 650;
   font-size: clamp(44px, 8vw, 82px);
   line-height: 0.96;
+  color: var(--ok);
 }
 
 .login-copy {
