@@ -6,61 +6,98 @@
   <title>ER Twin — Live Floor</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
-<body>
-  <header>
-    <h1>AgentER — Live Floor</h1>
-    <div class="meta">
-      <span id="banner" class="banner hidden">data source unavailable — showing last known state</span>
-      <span id="live-dot" class="live-dot" title="live"></span>
-      <span id="updated" class="updated">—</span>
-      <a class="logout" href="/logout">Sign out</a>
-    </div>
-  </header>
-
-  <!-- KPI strip -->
-  <section id="kpis" class="kpis"></section>
-
-  <main>
-    <section class="panel wide floor-panel">
-      <div class="panel-topline">
-        <h2>ER Floor</h2>
-        <p class="panel-note">Read-only operational prototype. Click any marker for live details.</p>
+<body class="dashboard-body">
+  <div class="dashboard-shell">
+    <header class="topbar">
+      <div class="brand-block">
+        <p class="eyebrow">ER Autonomous Twin</p>
+        <h1>AgentER Control Deck</h1>
+        <p class="hero-copy">Live operational view across beds, staff, patients, and oxygen risk.</p>
       </div>
-      <div id="floor-map" class="floor-map"></div>
+      <div class="meta">
+        <span id="banner" class="banner hidden">data source unavailable — showing last known state</span>
+        <span class="meta-cluster">
+          <span id="live-dot" class="live-dot" title="live"></span>
+          <span class="meta-label">Live</span>
+        </span>
+        <span id="updated" class="updated">—</span>
+        <a class="logout" href="/logout">Sign out</a>
+      </div>
+    </header>
+
+    <section class="hero-band">
+      <div class="hero-stat">
+        <span class="hero-stat-label">Mode</span>
+        <strong>Read-only Ops Surface</strong>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-stat-label">Focus</span>
+        <strong>Floor coordination and alert visibility</strong>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-stat-label">Interaction</span>
+        <strong>Select any marker for live detail</strong>
+      </div>
     </section>
 
-    <section class="panel">
-      <h2>Beds</h2>
-      <div id="beds" class="bed-grid"></div>
-    </section>
+    <section id="kpis" class="kpis"></section>
 
-    <section class="panel">
-      <h2>Patients</h2>
-      <div id="patients" class="cards"></div>
-    </section>
+    <main class="dashboard-grid">
+      <section class="panel wide floor-panel">
+        <div class="panel-topline">
+          <div>
+            <p class="section-kicker">Facility</p>
+            <h2>ER Floor</h2>
+          </div>
+          <p class="panel-note">Interactive 3D operational prototype. Select markers for live detail.</p>
+        </div>
+        <div id="floor-map" class="floor-map"></div>
+      </section>
 
-    <section class="panel">
-      <h2>Staff</h2>
-      <div id="staff" class="cards"></div>
-    </section>
+      <div class="dashboard-column">
+        <section class="panel">
+          <p class="section-kicker">Capacity</p>
+          <h2>Beds</h2>
+          <div id="beds" class="bed-grid"></div>
+        </section>
 
-    <section class="panel">
-      <h2>Equipment</h2>
-      <div id="equipment" class="cards"></div>
-    </section>
+        <section class="panel">
+          <p class="section-kicker">Coverage</p>
+          <h2>Staff</h2>
+          <div id="staff" class="cards"></div>
+        </section>
+      </div>
 
-    <section class="panel wide">
-      <h2>Event Log</h2>
-      <ul id="events" class="events"></ul>
-    </section>
+      <div class="dashboard-column">
+        <section class="panel">
+          <p class="section-kicker">Queue</p>
+          <h2>Patients</h2>
+          <div id="patients" class="cards"></div>
+        </section>
 
-  </main>
+        <section class="panel">
+          <p class="section-kicker">Assets</p>
+          <h2>Equipment</h2>
+          <div id="equipment" class="cards"></div>
+        </section>
+      </div>
 
-  <!-- Command bar slot (hidden in read-only baseline; revealed when input is enabled) -->
-  <footer id="command-bar" class="hidden">
-    <input id="command-input" type="text" placeholder="Type a command for the orchestrator…" />
-    <button id="command-send">Send</button>
-  </footer>
+      <section class="panel wide">
+        <div class="panel-topline">
+          <div>
+            <p class="section-kicker">Trace</p>
+            <h2>Event Log</h2>
+          </div>
+        </div>
+        <ul id="events" class="events"></ul>
+      </section>
+    </main>
+
+    <footer id="command-bar" class="command-bar hidden">
+      <input id="command-input" type="text" placeholder="Type a command for the orchestrator…" />
+      <button id="command-send">Send</button>
+    </footer>
+  </div>
 
   <div id="detail-shell" class="detail-shell hidden" aria-hidden="true">
     <button id="detail-backdrop" class="detail-backdrop" type="button" aria-label="Close details"></button>
@@ -79,6 +116,7 @@
 
   <div id="toasts" class="toasts"></div>
 
+  <script src="/static/vendor/three.min.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

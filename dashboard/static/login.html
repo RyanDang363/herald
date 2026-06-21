@@ -7,23 +7,39 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body class="login-body">
-  <div class="login-card">
-    <h1>AgentER</h1>
-    <p class="login-sub">Restricted — authorized ER staff only</p>
-    <p id="error" class="login-error hidden">Sign-in failed. Please try again.</p>
+  <div class="login-layout">
+    <section class="login-intro">
+      <div>
+        <p class="eyebrow">ER Autonomous Twin</p>
+        <h1>AgentER</h1>
+      </div>
+      <p class="login-copy">Operational dashboard for beds, staff movement, patient state, and oxygen alerts.</p>
+      <div class="login-points">
+        <span>Read-only surface</span>
+        <span>Session protected</span>
+        <span>Live floor visibility</span>
+      </div>
+    </section>
 
-    <a id="google-btn" class="google-btn hidden" href="/auth/google">
-      <span class="g">G</span> Sign in with Google
-    </a>
-    <p id="oauth-note" class="login-note hidden">Google sign-in not configured — use the form below.</p>
+    <div class="login-card">
+      <p class="login-kicker">Restricted Access</p>
+      <h2>Sign in</h2>
+      <p class="login-sub">Authorized ER staff only</p>
+      <p id="error" class="login-error hidden">Sign-in failed. Please try again.</p>
 
-    <div id="divider" class="divider hidden"><span>or</span></div>
+      <a id="google-btn" class="google-btn" href="/auth/google" aria-disabled="true">
+        <span class="g">G</span> Sign in with Google
+      </a>
+      <p id="oauth-note" class="login-note">Google sign-in not configured — use the form below.</p>
 
-    <form class="login-form" method="post" action="/login">
-      <label>Username<input name="username" autocomplete="username" /></label>
-      <label>Password<input name="password" type="password" autocomplete="current-password" /></label>
-      <button type="submit">Sign in</button>
-    </form>
+      <div id="divider" class="divider"><span>or</span></div>
+
+      <form class="login-form" method="post" action="/login">
+        <label>Username<input name="username" autocomplete="username" /></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" /></label>
+        <button type="submit">Sign in</button>
+      </form>
+    </div>
   </div>
 
   <script>
@@ -35,9 +51,14 @@
     fetch("/auth/config")
       .then((r) => r.json())
       .then((c) => {
+        const btn = document.getElementById("google-btn");
         if (c.google_enabled) {
-          document.getElementById("google-btn").classList.remove("hidden");
-          document.getElementById("divider").classList.remove("hidden");
+          btn.classList.remove("google-btn-disabled");
+          btn.setAttribute("aria-disabled", "false");
+          document.getElementById("oauth-note").classList.add("hidden");
+        } else {
+          btn.classList.add("google-btn-disabled");
+          btn.addEventListener("click", (event) => event.preventDefault());
         }
       })
       .catch(() => {});
