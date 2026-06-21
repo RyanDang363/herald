@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     fal_key: str = ""
     agent_seed: str = "er-twin-demo-seed"
     use_mock: bool = True
+    # Intake orchestration mode (decision 2026-06-20-intake-orchestration-mode): "direct" = canonical
+    # in-process run_intake (demo-safe default); "async" = uAgent message flow (inert until built).
+    intake_mode: str = "direct"
 
 
 settings = Settings()

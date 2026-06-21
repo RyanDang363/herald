@@ -23,7 +23,9 @@ node_modules/
 # Build output
 dist/
 build/
-out/
+# Replay artifacts are generated; keep the dir (out/.gitkeep) but ignore its contents.
+out/*
+!out/.gitkeep
 
 # Logs
 *.log

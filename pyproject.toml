@@ -2,7 +2,7 @@
 name = "er-twin"
 version = "0.1.0"
 description = "ER Room Digital Twin — Fetch.ai uAgents + Bureau + ASI:One"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "uagents",
     "uagents-core",
@@ -21,6 +21,8 @@ package = false
 
 [tool.ruff]
 line-length = 100
+# Vendored third-party clone (Fetch.ai Innovation Lab examples) — not our code to lint.
+extend-exclude = ["fetch-ai-documentation/innovation-lab-examples"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

@@ -2,9 +2,11 @@
 
 **Hackathon Technical Specification — Developer Reference**
 
-Fetch.ai uAgents + Bureau · ASI:One · Redis · Pika via fal.ai (stretch)
+Fetch.ai uAgents + Bureau · ASI:One · in-memory/Redis state · Pika MCP replay (via Claude Code)
 
 > Target: 24-hour build · Python 3.11+ · Local Bureau, one Agentverse mailbox
+
+**One-liner:** *Fetch.ai coordinates the ER response; ASI:One exposes the public chat interface; StorageInterface/Redis records the event trace; Claude Code CLI invokes Pika MCP to turn that trace into replay media.*
 
 ---
 
@@ -12,9 +14,13 @@ Fetch.ai uAgents + Bureau · ASI:One · Redis · Pika via fal.ai (stretch)
 
 **✅ Feasible — with one critical architecture choice**
 
-Running every entity as its own uAgent is realistic only if they run as **local agents inside a uAgents Bureau** (many agents, one process, one event loop, in-process messaging). Spinning up dozens of independently-hosted Agentverse agents — each registering on the Almanac via mailbox — would be slow and flaky to demo.
+**Single-process Bureau (verified P1 default).** Everything runs in **one Python process, one `Bureau`**: the public `OrchestratorAgent` (`mailbox=True`, `publish_agent_details=True`, Chat Protocol) is added to the same Bureau as the private ER entity agents, and they communicate via in-process uAgent messaging. ASI:One reaches only the Orchestrator.
 
-**Conclusion:** all entities are real uAgents inside a Bureau; only the `OrchestratorAgent` gets an Agentverse mailbox + Chat Protocol + ASI:One so you can talk to the system from outside.
+> **Verified by spike.** Official Fetch docs do not prominently showcase `mailbox=True` agents inside a Bureau, but our local spike on `uagents==0.25.2` (`spikes/mailbox_inside_bureau_spike.py`) proves that **`Bureau.run_async` starts a member agent's mailbox client** and that **in-process Orchestrator ↔ entity messaging works** in this project environment. If Agentverse/ASI:One smoke testing fails, we fall back to the documented **two-process pattern** (standalone Orchestrator process + separate Bureau process) — see *Architecture Alternatives and Fallbacks*.
+
+**Why one process:** the riskiest seam (does the mailbox client start, and does internal messaging work?) is now proven, in-process, with one event loop and one command to debug. The two-process split would trade that proven seam for an *untested* cross-process endpoint hop — worse for a 24-hour build.
+
+**Conclusion:** all agents are real uAgents inside a single local Bureau; only the `OrchestratorAgent` gets an Agentverse mailbox + Chat Protocol + ASI:One so you can talk to the system from outside.
 
 **Demo priority:** Talking to the ASI:One orchestrator and watching it trigger ER events. Everything else is built in service of that one interaction loop.
 
@@ -44,7 +50,7 @@ cp .env.example .env
 # 3. Install dependencies (creates a local .venv)
 uv sync
 
-# 4. Run the Bureau (mock mode — no ASI:One key needed)
+# 4. Run the system (mock mode — no ASI:One key needed): ONE process, ONE Bureau
 USE_MOCK=true uv run python -m er_twin.main
 
 # 5. Run the tests
@@ -74,44 +80,96 @@ Emergency rooms suffer from cascading inefficiencies caused by static, reactive 
 
 ## Architecture
 
-One `OrchestratorAgent` is publicly registered on Agentverse (mailbox + Chat Protocol) and is the only agent reachable from ASI:One. All other agents run in a local Bureau process and communicate in-process with zero network overhead. State is persisted in Redis.
+This is the **Fetch.ai-native path**: build directly on uAgents, run everything in **one process /
+one `Bureau`**, with the public `OrchestratorAgent` (mailbox) added to the same Bureau as the
+private ER entity agents. ASI:One discovers and chats with **only** the Orchestrator — it is the
+single external surface. State lives behind a `StorageInterface` (InMemoryStore first, Redis later).
+After an event runs, the system exports an incident trace that the **Claude Code CLI → Pika MCP**
+turn into replay media — an automated post-processing step, *not* part of the Fetch runtime.
+
+**Single-process runtime (P1 default):**
+
+- **One entry point — `er_twin/main.py`.** Builds a single `Bureau`, adds the `OrchestratorAgent` (`mailbox=True`, `publish_agent_details=True`, `Protocol(spec=chat_protocol_spec)`) **and** all private entity agents (Admissions, Triage, Patient(s), Bed(s), Nurse(s), Doctor(s), Equipment(s)), then `bureau.run()`.
+- **Orchestrator** is the only public surface (Agentverse mailbox + ASI:One). It handles the 3 NL demo triggers, dispatches **in-process** uAgent messages to the private agents, and writes the event log + `out/incident_replay_brief.json`.
+- **Entity agents** have **no mailbox** and **no Agentverse profiles** — private by design.
+
+> **Not** the "other framework → uAgent Adapter → Agentverse" path, and **not** hosting every
+> entity as a public Agentverse agent. Pika MCP is never called by uAgents directly — only by the
+> Claude Code CLI. The **two-process** split (standalone Orchestrator + separate Bureau) is the
+> documented fallback if ASI:One smoke testing fails — see *Architecture Alternatives and Fallbacks*.
+
+**Implementation notes (carry into P1 code):**
+
+- **Async, not request/response.** uAgents messaging is fire-and-forget: a chat handler `ctx.send`s and returns; the reply arrives later in a *separate* `@on_message` handler. The Orchestrator must store `{session/request id → user sender address}` and send the final `ChatMessage` from the response handler. (This matters more than the process-count decision.)
+- **Construct, don't import, the chat protocol:** `chat = Protocol(spec=chat_protocol_spec)` then `orchestrator.include(chat)`. There is no importable `chat_proto`.
+- **Pin Python `>=3.11,<3.13`** — Python 3.14 breaks `uagents==0.25.2` event-loop init. The venv is on 3.12.
+- Use `network="testnet"` to quiet Almanac/funding warnings (mailbox reachability doesn't need on-chain funds). Keep `USE_MOCK=true` for P1. Add `openai` to deps only when wiring the real ASI:One call.
 
 ### System Diagram
 
 ```mermaid
 flowchart TD
-    User["You (ASI:One chat)"] -->|Chat Protocol| Orch["OrchestratorAgent (mailbox + ASI:One)"]
-    Orch -->|"reasons w/ ASI:One LLM"| Orch
-    Orch -->|uAgent msgs| Triage["TriageAgent"]
-    Orch -->|uAgent msgs| Admit["AdmissionsAgent"]
-    Orch --> Patients["PatientAgent xN"]
-    Orch --> Nurses["NurseAgent xN"]
-    Orch --> Doctors["DoctorAgent xN"]
-    Orch --> Beds["BedAgent xN"]
-    Orch --> Equip["EquipmentAgent xN"]
-    subgraph bureau [uAgents Bureau - one process]
-        Triage
-        Admit
-        Patients
-        Nurses
-        Doctors
-        Beds
-        Equip
+    User["Judge (ASI:One chat)"] -->|Chat Protocol| AV["Agentverse mailbox"]
+    AV --> Orch
+    subgraph bureau [One process — single uAgents Bureau]
+        Orch["OrchestratorAgent (public)<br/>mailbox=True · publish_agent_details=True<br/>Chat Protocol · USE_MOCK intent routing"]
+        Orch -->|in-process uAgent msgs| Admit["AdmissionsAgent"]
+        Orch --> Triage["TriageAgent"]
+        Orch --> Patients["PatientAgent xN"]
+        Orch --> Beds["BedAgent xN"]
+        Orch --> Nurses["NurseAgent xN"]
+        Orch --> Doctors["DoctorAgent xN"]
+        Orch --> Equip["EquipmentAgent xN"]
     end
-    Orch <-->|state| Redis["Redis (state + memory)"]
-    Patients <-->|state| Redis
-    Orch -.->|stretch| Pika["Pika via fal.ai (incident replay)"]
-    Redis -.->|stretch| Dash["Dashboard / 3D map"]
+    Orch <-->|state| Store["StorageInterface<br/>InMemoryStore first · RedisStore later"]
+    Patients <-->|state| Store
+    Store --> Log["event log (er:events)"]
+    Orch --> Brief["out/incident_replay_brief.json<br/>out/pika_prompt.md"]
+    Brief -.->|scripts/run_pika_replay.ps1| CLI["Claude Code CLI<br/>--mcp-config .mcp.json --allowedTools"]
+    CLI -.-> Pika["Pika MCP server"]
+    Pika -.-> Result["out/pika_result.json<br/>+ incident replay media"]
+    Store -.->|stretch| Dash["Dashboard"]
 ```
+
+The solid path (chat → Orchestrator → in-process Bureau agents → state → event log → brief) is the
+Fetch.ai judging path, all in one process. The dotted path (brief → `run_pika_replay.ps1` → Claude
+Code CLI → Pika MCP → `pika_result.json` + media) is the **automated** creative replay layer. The
+dashboard is stretch-only. (Entity agents are private — only the Orchestrator is on Agentverse.)
 
 ### Key Architecture Decisions
 
 | Decision | Rationale |
 | --- | --- |
-| **Bureau for internal agents** | In-process messaging between all ER entity agents — no network hop, no Almanac registration overhead, persistent state across handler calls. Essential for demo reliability. |
-| **Single Agentverse mailbox** | Only `OrchestratorAgent` registers on Agentverse + Chat Protocol. This is the sole public entry point. Maps to the HIPAA story: patient data never leaves the local process. |
-| **ASI:One LLM reasoning** | `OrchestratorAgent` calls the ASI:One API to interpret natural language commands and decide which internal agents to message. Enables the judge-facing chat demo. |
-| **Redis as state layer** | One hash per agent ID stores vitals, status, location, assignments. Pub/Sub feeds the stretch dashboard. Start with an in-memory dict behind a storage interface; swap to Redis once core works. |
+| **Fetch.ai-native (no adapter)** | Build directly on `uagents` — no LangChain/CrewAI/AutoGen/uAgent-Adapter in the main runtime. The judging path is pure Fetch: uAgents + Bureau + Agentverse mailbox + Chat Protocol + ASI:One. |
+| **Single-process Bureau (P1 default, spike-proven)** | The public `OrchestratorAgent` (`mailbox=True`) and all private entity agents live in **one `Bureau`, one process**. Our spike on `uagents==0.25.2` proves the Bureau starts the Orchestrator's mailbox client and in-process messaging works. Two-process (standalone Orchestrator + separate Bureau) is the documented fallback if ASI:One smoke testing fails. |
+| **Bureau for all agents** | In-process messaging between the Orchestrator and every ER entity agent — no cross-process hop, no Almanac overhead, persistent state across handler calls. The proven seam; essential for demo reliability. |
+| **Single Agentverse mailbox** | Only `OrchestratorAgent` registers on Agentverse + Chat Protocol. This is the sole public entry point; ASI:One talks to nothing else. Maps to the HIPAA story: patient data never leaves the local process. |
+| **ASI:One LLM reasoning** | `OrchestratorAgent` calls the ASI:One API to interpret natural language commands and decide which internal agents to message; `USE_MOCK=true` swaps in deterministic intent routing for offline demos. |
+| **State behind an interface** | One record per agent ID (vitals, status, location, assignments) behind `StorageInterface`. **`InMemoryStore` is the demo-safe default**; `RedisStore` swaps in later with zero handler changes — Redis is never a blocker for the core demo. |
+| **Pika MCP via Claude Code CLI (automated)** | The Fetch runtime emits a structured incident trace (`incident_replay_brief.json` + `pika_prompt.md`); **`scripts/run_pika_replay.ps1` → Claude Code CLI (`--mcp-config .mcp.json --allowedTools ...`) → Pika MCP** turns it into replay media → `out/pika_result.json`. Verified end-to-end. uAgents never call Pika directly. Manual VSCode operator flow is the documented fallback (Alternative B). |
+
+---
+
+## Build Priority Order
+
+Strict priority — each level is only started once the previous one demonstrably works.
+
+| Priority | Goal | Deliverable |
+| --- | --- | --- |
+| **P1 — Mandatory Fetch.ai judging path** | ASI:One chat reaches the public Orchestrator and round-trips | `er_twin/agents/orchestrator.py` (mailbox=True + Chat Protocol + `USE_MOCK` intent routing), `er_twin/main.py` (single Bureau builder), deterministic trigger routing |
+| **P2 — Minimal local agent coordination** | In-process messaging proven (the seam the spike validated) | `er_twin/agents/stub.py` added to the same Bureau; Orchestrator sends `PingRequest` → `StubAgent` replies `PingResponse` → Orchestrator relays to chat |
+| **P3 — One meaningful ER event** | Real multi-agent coordination, not a mock | Patient intake **or** low-oxygen: Orchestrator dispatches to local agents → agents update the store → useful ASI:One reply |
+| **P4 — Incident replay bridge** | Pika-ready output from the event trace | Structured event logging → `out/incident_replay_brief.json` + `out/pika_prompt.md` |
+| **P5 — Pika MCP automation** | Automated media from the brief | `scripts/run_pika_identity_check.ps1` + `scripts/run_pika_replay.ps1` → Claude Code CLI (`--mcp-config .mcp.json --allowedTools ...`) → `out/pika_result.json` |
+| **P6 — Redis** | Durable state (optional for demo) | `RedisStore` behind the existing interface, **only after** the core demo works. `InMemoryStore` stays the default; Redis must not block P1. |
+| **P7 — Stretch** | Cut first if behind | Dashboard · captions/voiceover · additional events · fal.ai fallback · PharmacyAgent |
+
+The judging demo, end to end: **(1)** judge chats with ASI:One → **(2)** ASI:One reaches the
+Agentverse Orchestrator → **(3)** Orchestrator triggers a real local Bureau event → **(4)** ER
+agents update state + event log → **(5)** Orchestrator replies with what happened → **(6)** system
+emits a Pika-ready replay brief → **(7)** `run_pika_replay.ps1` drives the Claude Code CLI → Pika MCP
+to generate the incident replay (**pre-generated before judging**; the live run is shown as
+proof-of-work).
 
 ---
 
@@ -120,12 +178,13 @@ flowchart TD
 | Component | Detail |
 | --- | --- |
 | **Language** | Python 3.11+ |
-| **Agent framework** | `uagents` + `uagents-core` (Bureau for local agents; Chat Protocol for Orchestrator) |
-| **Orchestrator brain** | ASI:One LLM via API — reasoning layer + the chat interface demoed to judges |
-| **State / memory** | Redis — one hash per agent ID (vitals, status, location, assignments); Pub/Sub for dashboard feed |
-| **Secrets** | `.env` + `.env.example` — keys: `ASIONE_API_KEY`, `REDIS_URL`, `FAL_KEY`. Never commit `.env`. |
-| **Stretch — video** | Pika 2.2 image-to-video via fal.ai. Async (~minutes). Pre-generate one incident clip before judging. |
-| **Stretch — dashboard** | FastAPI + static HTML reading Redis. 3D via Three.js only if time remains. |
+| **Agent framework** | `uagents` + `uagents-core` (Bureau for local agents; Chat Protocol for Orchestrator). No adapter / no other framework in the runtime. |
+| **Orchestrator brain** | ASI:One LLM via API — reasoning layer + the chat interface demoed to judges. `USE_MOCK=true` → deterministic intent routing, no API call. |
+| **State / memory** | `StorageInterface` — **`InMemoryStore` is the default** (zero deps, demo-safe); one record per agent ID; event log on `er:events`. `RedisStore` is a later swap (P4). |
+| **Creative replay** | **Pika MCP**, driven by the **Claude Code CLI** (headless, `--mcp-config .mcp.json --allowedTools ...`) via `scripts/run_pika_replay.ps1`. Consumes `out/incident_replay_brief.json` + `out/pika_prompt.md`, writes `out/pika_result.json`. Automated post-processing — not in the Fetch runtime. |
+| **Secrets** | `.env` + `.env.example` — keys: `ASIONE_API_KEY`, `REDIS_URL` (optional), `FAL_KEY` (optional). Never commit `.env`. |
+| **Optional — fal.ai** | Cuttable fallback for media generation **only if** Pika MCP fails or there is spare time. Not on the critical path; not implemented by default. |
+| **Stretch — dashboard** | FastAPI + static HTML reading the store. Cut first if behind schedule. |
 
 ---
 
@@ -171,28 +230,34 @@ Only one agent in the entire system needs to be registered on ASI:One: the `Orch
 
 ### Orchestrator Registration Code
 
+**Single process — `er_twin/main.py`** (Orchestrator + private agents in one Bureau, spike-proven):
+
 ```python
-from uagents import Agent
-from uagents_core.contrib.protocols.chat import chat_proto
+from uagents import Agent, Bureau, Protocol
+from uagents_core.contrib.protocols.chat import chat_protocol_spec
 
 orchestrator = Agent(
     name="er-orchestrator",
     seed=os.getenv("AGENT_SEED"),
-    port=8000,
-    endpoint=["http://localhost:8000/submit"],
-    mailbox=True,  # bridges Bureau <-> Agentverse <-> ASI:One
+    mailbox=True,                 # bridges Agentverse <-> ASI:One
+    publish_agent_details=True,   # publish profile for discovery
+    network="testnet",            # quiets Almanac/funding warnings
 )
-orchestrator.include(chat_proto)  # required for ASI:One chat compatibility
+chat = Protocol(spec=chat_protocol_spec)  # constructed, NOT imported
+# ... register @chat.on_message(ChatMessage) handlers on `chat` ...
+orchestrator.include(chat)
 
-# All other agents added to Bureau — no mailbox, no registration
+# ONE Bureau holds the public Orchestrator AND the private entity agents.
 bureau = Bureau()
-bureau.add(orchestrator)
-bureau.add(patient_agent)
-bureau.add(bed_agent)
-bureau.add(nurse_agent)
-# ... etc
-bureau.run()
+bureau.add(orchestrator)   # mailbox client is started by Bureau.run_async (spike-verified)
+bureau.add(stub_agent)     # P2 first; then admissions, triage, patient pool, beds, nurses, ...
+bureau.run()               # one event loop, one process, one command
 ```
+
+> **Fallback (two-process):** if ASI:One/Agentverse smoke testing fails, split into a standalone
+> `orchestrator.run()` process + a separate `Bureau(endpoint=[...])` process that the Orchestrator
+> messages by address. See *Architecture Alternatives and Fallbacks*. The mailbox needs a one-time
+> **Agent Inspector → Connect → Mailbox** step before ASI:One can reach it (same for both layouts).
 
 ---
 
@@ -202,23 +267,27 @@ Implement **exactly 3 events** for the demo. Each must be triggerable via a natu
 
 | Event | Trigger Phrase | Agent Flow |
 | --- | --- | --- |
-| **1. Patient Intake** | _"A new patient arrived with chest pain"_ | AdmissionsAgent receives patient → TriageAgent scores acuity → OrchestratorAgent assigns bed and care team → BedAgent + NurseAgent updated in Redis → confirmation returned to ASI:One chat. |
-| **2. Low Oxygen Alert** | _"Bed 3's patient oxygen is dropping"_ | EquipmentAgent (O₂ tank) emits low-supply alert → OrchestratorAgent finds nearest available unit → NurseAgent dispatched → Redis state updated → status confirmation in chat. |
-| **3. Status Summary** | _"Show me what's happening in the ER"_ | OrchestratorAgent reads live state from Redis across all agents → synthesizes summary via ASI:One LLM → returns to chat. _Stretch:_ opens dashboard / triggers Pika incident replay. |
+| **1. Patient Intake** | *"A new patient arrived with chest pain"* | AdmissionsAgent receives patient → TriageAgent scores acuity → OrchestratorAgent assigns bed and care team → BedAgent + NurseAgent update the store → confirmation returned to ASI:One chat. |
+| **2. Low Oxygen Alert** | *"Bed 3's patient oxygen is dropping"* | EquipmentAgent (O₂ tank) emits low-supply alert → OrchestratorAgent finds nearest available unit → NurseAgent dispatched → store updated → status confirmation in chat. |
+| **3. Status Summary** | *"Show me what's happening in the ER"* | OrchestratorAgent reads live state across all agents → synthesizes summary via ASI:One LLM → returns to chat. |
+
+Each event also appends structured lines to the `er:events` log (P4), which the Orchestrator
+exports as `out/incident_replay_brief.json` + `out/pika_prompt.md` — consumed by the automated Pika
+MCP replay step (P5, `scripts/run_pika_replay.ps1`).
 
 ---
 
 ## 24-Hour Build Timeline
 
-| Hours | Focus |
-| --- | --- |
-| **0–2h** | Repo setup. Define all uAgent message schemas and protocols. Agree on Redis key schema (one hash per agent ID). Assign agents to teammates. Set up `.env`. |
-| **2–8h** | Build PatientAgent, BedAgent, NurseAgent, DoctorAgent, OrchestratorAgent. Wire Bureau. Confirm in-process messaging works. |
-| **8–12h** | Wire up all 3 core events end-to-end. Connect Redis state layer. Implement ASI:One LLM call in Orchestrator for NL → action routing. |
-| **12–16h** | TriageAgent + EquipmentAgent. Test full event flows. Bug fixes. Add `USE_MOCK` fallback flag for Orchestrator responses. |
-| **16–20h** | Admin dashboard (FastAPI + HTML). Event log display via Redis Pub/Sub. Demo scenario scripting and hardcoded trigger commands. |
-| **20–22h** | Polish. Rehearse demo script. Confirm all 3 events fire cleanly end-to-end. Prepare slides. |
-| **22–24h** | Stretch: Pika incident replay (pre-generate clip). PharmacyAgent if ahead of schedule. Final presentation prep. |
+| Hours | Priority | Focus |
+| --- | --- | --- |
+| **0–2h** | done | Repo setup. Message schemas (`protocols.py`), `StorageInterface` + `InMemoryStore`, `config.py`, seed addresses. *(Phase 0 — complete.)* |
+| **2–6h** | **P1/P2** | `orchestrator.py` (mailbox + Chat Protocol + `USE_MOCK` routing), `stub.py`, `main.py` (single Bureau with both). Chat ping round-trips in-process. ASI:One reaches the Orchestrator. |
+| **6–12h** | **P3** | One full event end-to-end (intake): Admissions → Triage → Bed → Nurse/Doctor, in the Bureau, updating the store, with a useful chat reply. |
+| **12–16h** | **P4/P5** | Structured event logging → `out/incident_replay_brief.json` + `out/pika_prompt.md`. Build `run_pika_identity_check.ps1` + `run_pika_replay.ps1`; pre-generate one Pika clip. Second event if ahead. |
+| **16–20h** | **P3/P6** | Third event. Then `RedisStore` swap (optional). Harden the `USE_MOCK` deterministic demo path. |
+| **20–22h** | — | Polish. Rehearse the 7-step demo. Confirm all events fire cleanly with `USE_MOCK=true`. Pre-generate final replay. Slides. |
+| **22–24h** | **P7** | Stretch only: dashboard · captions/voiceover · fal.ai fallback · PharmacyAgent. Final presentation prep. |
 
 ---
 
@@ -226,21 +295,59 @@ Implement **exactly 3 events** for the demo. Each must be triggerable via a natu
 
 ### In Scope
 
-- All agents run locally in the Bureau — do **NOT** try to host every agent on Agentverse
+- Fetch.ai-native runtime: `uagents` + Bureau directly (no adapter, no other framework)
+- All entity agents run locally/private in the Bureau — **only** the Orchestrator is public
+- `OrchestratorAgent` mailbox + Chat Protocol; ASI:One talks to it and nothing else
+- `InMemoryStore` as the demo-safe default state layer (Redis is a later, optional swap)
 - 3 PatientAgents, 2 NurseAgents, 2 DoctorAgents, 4 BedAgents, a few EquipmentAgents
 - Exactly 3 events: intake→triage→bed, low-oxygen response, status summary
-- OrchestratorAgent mailbox + Chat Protocol + ASI:One registration
-- Redis state layer (behind in-memory dict interface until core works)
+- Incident replay bridge: export `incident_replay_brief.json` + `pika_prompt.md` for Pika MCP
+- Automated Pika MCP replay via Claude Code CLI (`run_pika_replay.ps1`); pre-generate the final clip
 - Simulated synthetic patient data only — no real PHI
 
 ### Explicitly Out of Scope
 
-- Hosting every agent on Agentverse (flaky, slow, not needed)
-- 3D hospital model (describe as future extension in pitch)
-- Hardware / IoT layer
-- Production HIPAA compliance
-- PharmacyAgent, 4th+ events — stretch only
-- Pika and dashboard — stretch only, cut if behind schedule at hour 20
+- **Hosting every agent on Agentverse** — only the Orchestrator is public (flaky, slow, not needed)
+- **The "other framework → uAgent Adapter → Agentverse" path** — we build Fetch-native
+- **ASI:One talking to any agent besides the Orchestrator**
+- **Pika MCP inside the Fetch runtime** — it is invoked by the Claude Code CLI, never from `er_twin/`
+- **Redis as a prerequisite** — the core demo runs on `InMemoryStore`; Redis is P6/optional
+- **fal.ai** — optional/cuttable fallback only (Alternative E); not implemented unless Pika MCP fails
+- **Dashboard** — stretch only, cut first if behind schedule
+- 3D hospital model, hardware/IoT layer, production HIPAA compliance, PharmacyAgent, 4th+ events
+
+### Down-Ranked Assumptions (explicitly rejected as defaults)
+
+These earlier assumptions are **not** part of the current plan — do not reintroduce them as defaults:
+
+- ❌ Every ER entity registered on Agentverse — only the Orchestrator is public.
+- ❌ Every ER entity needs a mailbox — internal agents have none.
+- ❌ Orchestrator must run as its own separate process — it lives **inside** the single Bureau (spike-proven); two-process is the fallback only.
+- ❌ Redis required before the demo — `InMemoryStore` is the default; Redis is P6/optional.
+- ❌ Pika MCP called directly from uAgents — only the Claude Code CLI calls it.
+- ❌ Claude SDK / Anthropic API required for Pika — CLI path is verified and primary (SDK is Alt C, future).
+- ❌ fal.ai required — fallback only (Alt E).
+- ❌ Dashboard required — stretch only.
+- ❌ Live video generation during judging required — pre-generate; live run is proof-of-work only.
+
+---
+
+## Architecture Alternatives and Fallbacks
+
+Documented so we can switch paths if setup or bugs force it. Two axes: **runtime** (F–H) and **Pika
+replay path** (A–E). **Chosen primaries: Alternative F (single-process Bureau runtime) and
+Alternative A (Claude Code CLI → Pika MCP).** Two-process (G) is the runtime fallback.
+
+| Alt | Path | Status | Notes |
+| --- | --- | --- | --- |
+| **A** | **Fetch runtime + Claude Code CLI + Pika MCP** | ✅ **Primary (verified)** | Fetch writes `incident_replay_brief.json`; `run_pika_replay.ps1` calls the CLI with `--allowedTools`; CLI invokes Pika MCP. Best balance of automation and matching Pika's setup; verified end-to-end. |
+| **B** | Manual Claude Code operator (VSCode) | Fallback | Human opens the VSCode session, asks Claude Code to run the Pika workflow from `pika_prompt.md`. Slower, less programmatic — safest live backup if headless tool/permission issues reappear. |
+| **C** | Claude SDK / Anthropic API MCP connector | Future / production | Python script calls the Claude API with `mcp_servers=[...]`. Cleaner for a deployed backend; not primary because Pika's hackathon setup targets Claude Code + OAuth. May need token handling. |
+| **D** | Custom Python MCP client | Not for 24h build | Fetch/back end speaks MCP to Pika directly. Most direct in theory, highest risk (sessions, auth, tool discovery, async, parsing). Only if everything else is done. |
+| **E** | fal.ai direct API | Cuttable fallback | Use fal.ai/Pika model API instead of Pika MCP if MCP breaks or credits fail. Not primary (track wants Pika MCP). Don't add `fal-client` until necessary. |
+| **F** | **Single-process Fetch Bureau** | ✅ **Primary runtime (spike-proven)** | One process: public Orchestrator (`mailbox=True`) **inside** the Bureau with the private entity agents. `spikes/mailbox_inside_bureau_spike.py` passes on `uagents==0.25.2` (mailbox client starts; in-process ping round-trips). The chosen P1 default. |
+| **G** | Two-process split (standalone Orchestrator + separate Bureau) | Fallback | Orchestrator `agent.run()` (mailbox) + a separate `Bureau(endpoint=[...])` of entity agents, messaged by address. Closer to official examples but adds an *untested* cross-process seam. Use only if the one-process ASI:One smoke test fails. |
+| **H** | Multi-process quickstarter style | Last-resort fallback | Orchestrator standalone + each helper agent its own process. Most terminals/process management. Use only if Bureau endpoint messaging is also problematic. |
 
 ---
 
@@ -249,10 +356,11 @@ Implement **exactly 3 events** for the demo. Each must be triggerable via a natu
 | Risk | Mitigation |
 | --- | --- |
 | **Too many agents → flaky demo** | Use Bureau + small instance counts. Mock any agent not in the demo path. Add a `USE_MOCK=true` env flag that returns hardcoded responses from the Orchestrator. |
-| **ASI:One latency / rate limits** | Cache repeated prompts in Redis. Keep a `USE_MOCK` fallback for the Orchestrator's LLM call. Test rate limits in first 2 hours. |
-| **Redis setup time** | Start with an in-memory dict behind a tiny `StorageInterface` class. Swap to Redis once core events work — no other code changes needed. |
-| **Pika is slow / async** | Pre-generate one incident clip before the judging session. Treat live generation as a bonus, never as a required demo step. |
-| **Orchestrator ↔ Bureau messaging** | Orchestrator talks to Bureau agents via their deterministic seed-derived addresses. Set all agent addresses as constants at startup — no runtime discovery needed. |
+| **ASI:One latency / rate limits** | Keep a `USE_MOCK` fallback for the Orchestrator's LLM call (deterministic intent routing). Test rate limits in the first 2 hours. |
+| **Redis setup time** | Not a risk for the core demo — `InMemoryStore` is the default. `RedisStore` (P4) swaps in behind the same interface once events work; if Redis misbehaves, the demo still runs. |
+| **Pika MCP timing / async** | Replay is automated post-processing, not on the live judging path. **Pre-generate the final replay** from `incident_replay_brief.json` before judging and show the live `run_pika_replay.ps1` run as proof-of-work. Long renders return `{task_id}` → the script polls `task_status`. Manual VSCode operator flow (Alternative B) and fal.ai (Alternative E) are the documented fallbacks. |
+| **Headless CLI tool denial** | In `-p` mode the Claude Code CLI auto-denies MCP tool calls unless allowlisted. **Mitigation (verified):** pass an explicit `--allowedTools "mcp__pika-mcp__..."` list; the scripts fail loudly if `permission_denials` is non-empty. Do **not** rely on `--dangerously-skip-permissions`. |
+| **Orchestrator ↔ Bureau messaging** | All in-process (single Bureau) — the seam our spike proved. Orchestrator talks to entity agents via deterministic seed-derived addresses set as startup constants; no runtime discovery, no cross-process hop. |
 | **Demo reliability** | Hardcode a scripted scenario for each of the 3 events that you can trigger with a single command. Never rely on live randomness during the judging demo. |
 
 ---
@@ -271,3 +379,21 @@ Implement **exactly 3 events** for the demo. Each must be triggerable via a natu
 ## Note on HIPAA
 
 This prototype uses entirely synthetic patient data. No real PHI is handled. In a production deployment, Bureau agents would run inside the hospital's own infrastructure — patient data never leaves their network. The architecture (single public Orchestrator surface, all patient state siloed in local Bureau agents) is a stronger compliance posture than centralized hospital software.
+
+---
+
+## Devpost / Submission Deliverables
+
+Checklist of artifacts to attach to the submission:
+
+- [ ] **ASI:One shared chat link** — *(placeholder)*
+- [ ] **Agentverse public OrchestratorAgent profile link** — *(placeholder)*
+- [ ] **Pika MCP proof:**
+  - [ ] [.mcp.json](.mcp.json) (project-scope server registration)
+  - [ ] companion skills in `.agents/skills/` + `skills-lock.json`
+  - [ ] `out/pika_identity_check.json` (identity + balance, `permission_denials: []`)
+  - [ ] generated replay artifact + `out/pika_result.json`
+- [ ] **Demo script** with the three exact trigger phrases (see [docs/TEAM.md](docs/TEAM.md))
+- [ ] **Note:** all patient data is synthetic — no real PHI.
+
+**Submission one-liner:** *Fetch.ai coordinates the ER response; ASI:One exposes the public chat interface; StorageInterface/Redis records the event trace; Claude Code CLI invokes Pika MCP to turn that trace into replay media.*

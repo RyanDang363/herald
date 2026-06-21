@@ -23,6 +23,24 @@ this project. Read it to answer "how do I call ASI:One," not to learn what we're
   `Agent`/`Protocol`/`@protocol.on_message` shape, OpenAI client → ASI:One, and a client-agent
   example. Directly models the Orchestrator's public surface.
 
+## Working code examples
+
+For runnable, end-to-end examples — see
+[innovation-lab-examples/](innovation-lab-examples/) (Fetch.ai's official Innovation Lab
+examples repo, vendored locally). **Gitignored** — it's a separate clone with its own `.git`,
+so it won't show up in this repo's status. Browse it for working patterns rather than writing
+agents from scratch.
+
+Highlights relevant to this project:
+
+- [innovation-lab-examples/fetch-hackathon-quickstarter/](innovation-lab-examples/fetch-hackathon-quickstarter/) — ⭐ start here; hackathon scaffold.
+- [innovation-lab-examples/asi1-llm-example/](innovation-lab-examples/asi1-llm-example/) — calling the ASI:One LLM directly.
+- [innovation-lab-examples/a2a-uAgents-Integration/](innovation-lab-examples/a2a-uAgents-Integration/) — agent-to-agent inbound/outbound messaging (models the Orchestrator ↔ Bureau flow).
+- [innovation-lab-examples/mcp-agents/](innovation-lab-examples/mcp-agents/) · [innovation-lab-examples/Rag-agent/](innovation-lab-examples/Rag-agent/) · [innovation-lab-examples/anthropic-quickstart/](innovation-lab-examples/anthropic-quickstart/) — other agent integrations.
+- [innovation-lab-examples/cursor-rules/](innovation-lab-examples/cursor-rules/) — editor rules for building uAgents.
+
+See the repo's own [README](innovation-lab-examples/README.md) for the full catalog.
+
 ## Fast facts
 
 - Base URL: `https://api.asi1.ai`  ·  Endpoints: `POST /v1/chat/completions` and `/v1/responses`

@@ -10,7 +10,7 @@ Fill in names. Tracks map to the phases in the implementation plan.
 
 | Track | Owner | Files | Plan phases |
 |---|---|---|---|
-| **Agents** — all agent logic (critical path) | _dev 1_ | `er_twin/main.py`, `er_twin/addresses.py`, `er_twin/agents/orchestrator.py`, `er_twin/agents/stub.py`, `er_twin/agents/{admissions,triage,patient,bed,nurse,doctor,equipment}.py`, all `tests/test_event_*.py`, `tests/test_domain_invariants.py`, `tests/test_patient_pool.py`, `scripts/demo.md` | Phase 1, 2, 3, 4, 5 |
+| **Agents** — all agent logic (critical path) | **Evan** | `er_twin/main.py`, `er_twin/addresses.py`, `er_twin/replay.py`, `er_twin/agents/orchestrator.py`, `er_twin/agents/stub.py`, `er_twin/agents/{admissions,triage,patient,bed,nurse,doctor,equipment}.py`, all `tests/test_event_*.py`, `tests/test_domain_invariants.py`, `tests/test_patient_pool.py`, `tests/test_replay.py`, `scripts/build_pika_prompt.py`, `scripts/run_pika_identity_check.ps1`, `scripts/run_pika_replay.ps1`, `scripts/pika_replay_operator.md`, `scripts/demo.md` | Phase 1, 2, 3, 4, 5, R, P |
 | **Redis layer** — storage backend | _dev 2_ | `er_twin/storage.py` (`RedisStore` implementation only — `InMemoryStore` already scaffolded), `tests/test_storage.py` (extend with `RedisStore` contract tests) | Phase 6 |
 | **Dashboard** — admin UI | _dev 3_ | `dashboard/` (FastAPI server + HTML/JS frontend reading store state) | Stretch |
 
@@ -27,11 +27,17 @@ Fill in names. Tracks map to the phases in the implementation plan.
 Dev 3 builds the UI against this hardcoded JSON shape (from LLD §2). When Dev 1's agents are
 ready, replace the fixture with a real store read — the schema is identical.
 
+> **Vitals keys standardized (2026-06-20, decision R1):** canonical keys are
+> `{heart_rate, blood_pressure, resp_rate, spo2, temperature_f, pain_score}` (was `{hr, bp, spo2, temp_c}`).
+> `patient.specialty` is also now part of the patient record. See
+> [docs/decisions/2026-06-20-event-flow-decisions.md](decisions/2026-06-20-event-flow-decisions.md).
+
 ```json
 {
   "patients": [
-    {"id": "p1", "name": "Jordan Lee", "status": "admitted", "acuity": 2,
-     "chief_complaint": "chest pain", "vitals": {"hr": 102, "spo2": 94, "bp": "138/88", "temp_c": 37.1},
+    {"id": "p1", "name": "Jordan Lee", "status": "admitted", "acuity": 2, "specialty": "cardiology",
+     "chief_complaint": "chest pain",
+     "vitals": {"heart_rate": 102, "blood_pressure": "138/88", "resp_rate": 20, "spo2": 94, "temperature_f": 98.8, "pain_score": 7},
      "assigned_bed": "bed1", "care_team": ["nurse1", "doc1"]}
   ],
   "beds": [
@@ -87,6 +93,23 @@ phrases exact so the demo is deterministic.
 The mock response is the *fallback string only*. Real agent handlers still run the actual flow;
 mock just bypasses the LLM intent-resolution call.
 
+## The judging demo (7 steps)
+
+The architecture exists to make this loop work. One-liner: _Fetch.ai coordinates the ER response;
+ASI:One exposes the public chat interface; StorageInterface/Redis records the event trace; Claude
+Code CLI invokes Pika MCP to turn that trace into replay media._
+
+1. Judge chats with **ASI:One**.
+2. ASI:One reaches our **Agentverse-registered OrchestratorAgent** (inside the single Bureau — the only public surface).
+3. Orchestrator triggers a real **local Bureau event** (intake / oxygen / summary) — in-process, same Bureau.
+4. ER agents coordinate and **update state + the `er:events` log**.
+5. Orchestrator **replies in chat** with what happened.
+6. System emits a **Pika-ready replay brief** (`out/incident_replay_brief.json` + `out/pika_prompt.md`).
+7. **`scripts/run_pika_replay.ps1` → Claude Code CLI → Pika MCP** generate the incident replay → `out/pika_result.json` (pre-generated before judging; the live CLI run is shown as proof-of-work; fal.ai is the optional fallback).
+
+Steps 1–6 are pure Fetch.ai (the judging path). Step 7 is automated creative post-processing — Pika
+MCP is never called from inside the uAgents runtime, only by the Claude Code CLI.
+
 ## Demo-day roles
 
 | Role | Who | Job |
@@ -98,6 +121,6 @@ mock just bypasses the LLM intent-resolution call.
 ## Daily sync points
 
 - After Phase 0 merges: confirm everyone can `import er_twin.protocols`.
-- After Phase 1: orchestrator chat ping round-trips through the stub.
+- After Phase 1: orchestrator chat ping round-trips in-process to the stub in the same Bureau (`python -m er_twin.main`).
 - Hour 16 checkpoint: all 3 events fire end-to-end with `USE_MOCK=true`. Freeze scope; cut anything
   not in the 3-event demo.

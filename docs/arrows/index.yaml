@@ -1,0 +1,95 @@
+schema_version: 1
+last_updated: 2026-06-20  # System-wide coherence sweep (post Phases 5/R/P): HLD SHA 8e87478 unchanged for all 6 arrows; spot-check confirms every [x] spec (incl. all SUMM-*/REPLAY-*) is @spec-annotated in code AND tests, no orphan annotations, no drift. All 6 arrows OK. (Phase P = Pika CLI scripts, no EARS/arrow.) Prior: Phase R incident-replay OK; Phase 5 status-summary OK; Phase 4 low-oxygen-alert OK (flow_id-keyed)
+# Event-flow mechanics for the unbuilt arrows are pinned in:
+#   docs/decisions/2026-06-20-event-flow-decisions.md        (Round 1: Gaps 1-9)
+#   docs/decisions/2026-06-20-round-2-event-mechanics.md     (Round 2: staff/oxygen/summary/replay)
+#   docs/decisions/2026-06-20-intake-orchestration-mode.md   (hybrid: intake direct canonical, oxygen = async showcase)
+
+# Arrow dependency graph for the ER Twin. The whole system shares ONE HLD (README.md), ONE LLD
+# (docs/llds/er-twin-core.lld.md), and ONE spec file (docs/specs/er-events-specs.md) whose feature
+# sections (ORCH / DOMAIN / INTAKE / OXY / SUMM / REPLAY) are the natural arrow boundaries. There is
+# no PRD, so no prd_* fields appear in upstream_at_audit.
+#
+# Arrow chain: README (HLD) -> er-twin-core.lld -> er-events-specs (EARS) -> tests -> code.
+
+arrows:
+  orchestrator-skeleton:
+    status: OK
+    sampled: 2026-06-20
+    audited: 2026-06-20
+    upstream_at_audit:
+      hld_sha: 8e87478          # git hash-object README.md (working-tree HLD content)
+    blocks: [domain-invariants, patient-intake, low-oxygen-alert, status-summary]
+    blockedby: []
+    detail: orchestrator-skeleton.md
+    next: "Phase 5: implement _resolve_via_llm (real ASI:One), flip ORCH-LLM-001 [D]->[x], re-audit (stays OK)."
+    drift: null  # ORCH-SYS-003 ↔ CommandGate drift detected + resolved 2026-06-20 (lifecycle gate, code→spec); see orchestrator-skeleton.md history
+
+  domain-invariants:           # DOMAIN-* + entity agents (patient pool, bed, nurse, doctor, equipment) — Phase 2
+    status: OK
+    sampled: 2026-06-20
+    audited: 2026-06-20
+    upstream_at_audit:
+      hld_sha: 8e87478
+    blocks: [patient-intake, low-oxygen-alert, status-summary]
+    blockedby: [orchestrator-skeleton]
+    detail: domain-invariants.md
+    next: null
+    drift: null
+
+  # --- Not yet built. Structure is fully designed in the shared LLD + spec file, but no code exists,
+  #     so these stay UNMAPPED until their phase begins (then: core sample -> arrow doc -> audit). ---
+
+  patient-intake:              # INTAKE-* — Phase 3 (first meaningful ER event)
+    status: OK
+    sampled: 2026-06-20
+    audited: 2026-06-20
+    upstream_at_audit:
+      hld_sha: 8e87478
+    blocks: [incident-replay]
+    blockedby: [orchestrator-skeleton, domain-invariants]
+    detail: patient-intake.md
+    next: "Done for the demo (INTAKE_MODE=direct canonical, per intake-orchestration-mode decision). OPTIONAL/timeboxed: add INTAKE_MODE=async wrapper (same pure fns, IntakeFlow correlation) only AFTER Phase 4 oxygen async is green."
+    drift: null  # transport realized in-process by decision (hybrid); not spec-code drift
+
+  low-oxygen-alert:            # OXY-* — Phase 4
+    status: OK
+    sampled: 2026-06-20
+    audited: 2026-06-20
+    upstream_at_audit:
+      hld_sha: 8e87478
+    blocks: [incident-replay]
+    blockedby: [orchestrator-skeleton, domain-invariants]
+    detail: low-oxygen-alert.md
+    next: "Done for the demo — 9/9 OXY-* specs [x]; real async messaging proven end-to-end (spikes/oxygen_async_flow_spike.py, exit 0). Concurrency hardening complete: flow_id-keyed oxygen_flows + flow_id on every oxygen message + idempotent swap + no-op stale/duplicate responses. Replay milestone publication to er:events is Phase R."
+    drift: null
+
+  status-summary:              # SUMM-* — Phase 5
+    status: OK
+    sampled: 2026-06-20
+    audited: 2026-06-20
+    upstream_at_audit:
+      hld_sha: 8e87478
+    blocks: []
+    blockedby: [orchestrator-skeleton, domain-invariants]
+    detail: status-summary.md
+    next: "Done for the demo — 4/4 SUMM-* specs [x] (read-only, synchronous, store-derived template per R2-F; pure build_status_summary + thin chat branch). OPTIONAL: real ASI:One synthesis alongside ORCH-LLM-001. summary_generated replay milestone is Phase R."
+    drift: null
+
+  incident-replay:             # REPLAY-* — Phase R (event log -> out/incident_replay_brief.json + pika_prompt.md)
+    status: OK
+    sampled: 2026-06-20
+    audited: 2026-06-20
+    upstream_at_audit:
+      hld_sha: 8e87478
+    blocks: []
+    blockedby: [patient-intake, low-oxygen-alert]
+    detail: incident-replay.md
+    next: "Done for the demo — 6/6 REPLAY-* specs [x] (ReplayRecorder er:events milestone log; replay.py brief+prompt export, R2-G/R2-H/Gap-9; intake chain verified on disk). NEXT PHASE (P, not this arrow): scripts/run_pika_*.ps1 — Claude Code CLI -> Pika MCP from out/incident_replay_brief.json."
+    drift: null
+
+# Domains registered in `arrows` above with status UNMAPPED. Listed here for quick scanning; remove a
+# name from this list when its arrow is first mapped (core sample taken, doc created).
+# All arrows are now mapped + audited OK (Phases 0–R complete). Phase P (Pika CLI scripts) carries no
+# EARS specs, so it is not an arrow — it consumes incident-replay's out/ artifacts.
+unmapped: []

@@ -1,0 +1,3 @@
+# Keeps the out/ directory in the repo. Generated replay artifacts
+# (incident_replay_brief.json, {incident_id}.json, pika_prompt.md, pika_*.json)
+# stay gitignored — see .gitignore.
