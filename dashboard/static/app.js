@@ -355,6 +355,7 @@ function renderKpis(s) {
 
 // 3D-only render config. The shared geometry (FLOOR_ZONES, FLOOR_VIEWBOX, BED_LAYOUT, FLOOR_LABELS,
 // FLOOR_WALLS) is destructured from window.Floor near the top of this file.
+const FLOOR_PERIMETER_WALLS = FLOOR_WALLS.slice(0, 11);
 const FLOOR_FOCUS_GROUPS = [
   { label: "All", zone: "" },
   { label: "Waiting", zone: "waiting" },
@@ -378,29 +379,41 @@ const FLOOR_3D = {
   orthoHeight: 15.8,
   panMarginX: 150,
   panMarginY: 110,
+  introDelayMs: 110,
+  introDurationMs: 1660,
+  introStartYawOffset: 0.18,
+  introStartPitch: 1.02,
+  introStartDistance: 22.8,
+};
+
+const FLOOR_FOOTPRINT = {
+  left: 60,
+  right: 940,
+  top: 70,
+  bottom: 550,
 };
 
 const ROOM_3D_COLORS = {
-  waiting: 0xf1f1ee,
-  triage: 0xe3e6e2,
-  trauma: 0xe7dfdb,
-  "nurses-station": 0xe1e4e2,
-  storage: 0xe3e0da,
-  cardiology: 0xece9e2,
-  "general-a": 0xe9e7e0,
-  "general-b": 0xe7e5de,
-  corridor: 0xd2d0ca,
+  waiting: 0xe7ebea,
+  triage: 0xdde3e1,
+  trauma: 0xe4deda,
+  "nurses-station": 0xdde3e3,
+  storage: 0xe0ddd8,
+  cardiology: 0xe8e5df,
+  "general-a": 0xe5e3dd,
+  "general-b": 0xe2e1db,
+  corridor: 0xcfd5d4,
 };
 
 const TOKEN_3D_COLORS = {
-  patient: 0x547089,
-  nurse: 0x5e7466,
-  doctor: 0x72697f,
-  bed: 0x8d9498,
-  equipment: 0x987a57,
-  alert: 0xa06259,
-  busy: 0x907152,
-  ok: 0x617868,
+  patient: 0x627d8e,
+  nurse: 0x5b786e,
+  doctor: 0x766f82,
+  bed: 0x8b999f,
+  equipment: 0x997b5b,
+  alert: 0xb0695d,
+  busy: 0xa58558,
+  ok: 0x5f7b72,
 };
 
 // normalizeFloorLocation, normalizeFloorZone, and zoneNameForPatient are destructured from
@@ -590,14 +603,20 @@ function wireFloorControls3d(shell) {
       event.stopPropagation();
       if (!floorView) return;
       const action = button.dataset.viewAction;
-      if (action === "zoom-in") {
+      if (action === "reveal") {
+        startFloorIntro3d(floorView);
+      } else if (action === "zoom-in") {
+        completeFloorIntro3d(floorView);
         floorView.controls.distance = clamp(floorView.controls.distance * 0.82, FLOOR_3D.minDistance, FLOOR_3D.maxDistance);
       } else if (action === "zoom-out") {
+        completeFloorIntro3d(floorView);
         floorView.controls.distance = clamp(floorView.controls.distance * 1.18, FLOOR_3D.minDistance, FLOOR_3D.maxDistance);
       } else if (action === "top") {
+        completeFloorIntro3d(floorView);
         floorView.controls.pitch = FLOOR_3D.maxPitch;
         floorView.controls.distance = 17;
       } else if (action === "reset") {
+        completeFloorIntro3d(floorView);
         resetFloorCamera3d(floorView);
       }
     };
@@ -662,18 +681,21 @@ function initFloor3d(shell) {
 
   const modelGroup = new THREE.Group();
   scene.add(modelGroup);
+  const exteriorGroup = new THREE.Group();
+  exteriorGroup.visible = false;
+  scene.add(exteriorGroup);
 
-  const ambient = new THREE.HemisphereLight(0xffffff, 0xcac1b0, 2.8);
+  const ambient = new THREE.HemisphereLight(0xf7fafc, 0xd7d9dc, 3.05);
   scene.add(ambient);
 
-  const key = new THREE.DirectionalLight(0xffffff, 1.15);
+  const key = new THREE.DirectionalLight(0xfafcff, 0.78);
   key.position.set(-4, 12, 8);
   key.castShadow = true;
   key.shadow.mapSize.width = 1024;
   key.shadow.mapSize.height = 1024;
   scene.add(key);
 
-  const fill = new THREE.DirectionalLight(0xe8eee9, 0.72);
+  const fill = new THREE.DirectionalLight(0xf0f4f6, 0.44);
   fill.position.set(8, 5, -8);
   scene.add(fill);
 
@@ -684,12 +706,19 @@ function initFloor3d(shell) {
     camera,
     renderer,
     modelGroup,
+    exteriorGroup,
+    exteriorMaterials: [],
     tokenAnchors: new Map(),
     roomAnchors: new Map(),
     pickables: [],
     focusZone: "",
     raycaster: new THREE.Raycaster(),
     pointer: new THREE.Vector2(),
+    intro: {
+      armed: true,
+      active: false,
+      startedAt: 0,
+    },
     controls: {
       yaw: FLOOR_3D.defaultYaw,
       pitch: FLOOR_3D.defaultPitch,
@@ -700,6 +729,8 @@ function initFloor3d(shell) {
 
   bindFloor3dControls(floorView);
   resizeFloor3d(floorView);
+  buildExteriorShell3d(floorView);
+  showFloorShell3d(floorView);
   startFloor3dLoop();
 }
 
@@ -707,6 +738,7 @@ function bindFloor3dControls(view) {
   const { shell, container } = view;
   let drag = null;
   const runAction = (action) => {
+    completeFloorIntro3d(view);
     if (action === "zoom-in") {
       view.controls.distance = clamp(view.controls.distance * 0.82, FLOOR_3D.minDistance, FLOOR_3D.maxDistance);
     } else if (action === "zoom-out") {
@@ -739,11 +771,13 @@ function bindFloor3dControls(view) {
   container.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 && event.button !== 2) return;
     container.setPointerCapture(event.pointerId);
+    if (!view.intro.armed) completeFloorIntro3d(view);
     drag = {
       x: event.clientX,
       y: event.clientY,
       moved: false,
-      mode: event.button === 2 || event.altKey ? "orbit" : "pan",
+      button: event.button,
+      mode: view.intro.armed ? "orbit" : (event.button === 2 || event.altKey ? "orbit" : "pan"),
     };
     container.classList.add("dragging");
   });
@@ -770,13 +804,19 @@ function bindFloor3dControls(view) {
   container.addEventListener("pointerup", (event) => {
     if (!drag) return;
     const wasClick = !drag.moved;
+    const button = drag.button;
     drag = null;
     container.classList.remove("dragging");
+    if (view.intro.armed) {
+      if (wasClick && button === 0) startFloorIntro3d(view);
+      return;
+    }
     if (wasClick) pickFloorZone3d(view, event);
   });
 
   container.addEventListener("wheel", (event) => {
     event.preventDefault();
+    if (!view.intro.armed) completeFloorIntro3d(view);
     zoomFloor3d(view, event.deltaY > 0 ? 1.1 : 0.9, event.clientX, event.clientY);
   }, { passive: false });
 
@@ -846,6 +886,332 @@ function resizeFloor3d(view) {
   }
 }
 
+function exteriorMaterial(view, options) {
+  const material = new window.THREE.MeshStandardMaterial({
+    transparent: true,
+    metalness: 0,
+    roughness: 0.96,
+    ...options,
+  });
+  view.exteriorMaterials.push(material);
+  return material;
+}
+
+function addExteriorBox3d(view, width, height, depth, x, y, z, options) {
+  const mesh = new window.THREE.Mesh(
+    new window.THREE.BoxGeometry(width, height, depth),
+    exteriorMaterial(view, options)
+  );
+  mesh.position.set(x, y, z);
+  view.exteriorGroup.add(mesh);
+  return mesh;
+}
+
+function addExteriorDisk3d(view, radius, depth, x, y, z, options) {
+  const mesh = new window.THREE.Mesh(
+    new window.THREE.CylinderGeometry(radius, radius, depth, 36),
+    exteriorMaterial(view, options)
+  );
+  mesh.rotation.x = Math.PI / 2;
+  mesh.position.set(x, y, z);
+  view.exteriorGroup.add(mesh);
+  return mesh;
+}
+
+function addExteriorWallSegment3d(view, wall, height, centerY, thickness, options) {
+  const THREE = window.THREE;
+  const [x1, y1, x2, y2] = wall;
+  const horizontal = Math.abs(x2 - x1) >= Math.abs(y2 - y1);
+  const length = Math.max(Math.abs(horizontal ? x2 - x1 : y2 - y1) * FLOOR_3D.scale, 0.1);
+  const geometry = horizontal
+    ? new THREE.BoxGeometry(length, height, thickness)
+    : new THREE.BoxGeometry(thickness, height, length);
+  const mesh = new THREE.Mesh(geometry, exteriorMaterial(view, options));
+  mesh.position.copy(floorWorld((x1 + x2) / 2, (y1 + y2) / 2, centerY));
+  view.exteriorGroup.add(mesh);
+  return mesh;
+}
+
+function addExteriorGround3d(view) {
+  const THREE = window.THREE;
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(23.4, 0.035, 14.8),
+    exteriorMaterial(view, { color: 0xf1efea, roughness: 0.99, metalness: 0, opacity: 1 })
+  );
+  base.position.y = -0.035;
+  base.receiveShadow = true;
+  base.renderOrder = 0;
+  view.exteriorGroup.add(base);
+
+  const gridMaterial = new THREE.LineBasicMaterial({
+    color: 0xc3c0b8,
+    transparent: true,
+    opacity: 0.06,
+  });
+  view.exteriorMaterials.push(gridMaterial);
+  const grid = new THREE.GridHelper(24, 24, 0xc3c0b8, 0xe6e4de);
+  grid.position.y = 0.012;
+  grid.material.dispose();
+  grid.material = gridMaterial;
+  grid.renderOrder = 1;
+  view.exteriorGroup.add(grid);
+}
+
+function exteriorRoofPerimeterPoints() {
+  const allPoints = FLOOR_PERIMETER_WALLS.flatMap(([x1, y1, x2, y2]) => [
+    { x: x1, y: y1 },
+    { x: x2, y: y2 },
+  ]);
+  const xs = allPoints.map((point) => point.x);
+  const ys = allPoints.map((point) => point.y);
+  const left = Math.min(...xs);
+  const right = Math.max(...xs);
+  const top = Math.min(...ys);
+  const bottom = Math.max(...ys);
+  const topEdge = allPoints.filter((point) => point.y === top);
+  const leftEdge = allPoints.filter((point) => point.x === left);
+  const rightTurn = Math.max(
+    ...FLOOR_PERIMETER_WALLS
+      .filter(([x1, y1, x2, y2]) => x1 === x2 && x1 === Math.max(...topEdge.map((point) => point.x)))
+      .flatMap(([x1, y1, x2, y2]) => [y1, y2])
+  );
+  const leftTurn = Math.min(...leftEdge.map((point) => point.y));
+  return [
+    { x: Math.min(...topEdge.map((point) => point.x)), y: top },
+    { x: Math.max(...topEdge.map((point) => point.x)), y: top },
+    { x: Math.max(...topEdge.map((point) => point.x)), y: rightTurn },
+    { x: right, y: rightTurn },
+    { x: right, y: bottom },
+    { x: left, y: bottom },
+    { x: left, y: leftTurn },
+    { x: Math.min(...topEdge.map((point) => point.x)), y: leftTurn },
+  ];
+}
+
+function scaledPerimeterPoints(points, amount) {
+  const center = points.reduce(
+    (sum, point) => ({ x: sum.x + point.x / points.length, y: sum.y + point.y / points.length }),
+    { x: 0, y: 0 }
+  );
+  return points.map((point) => ({
+    x: center.x + (point.x - center.x) * amount,
+    y: center.y + (point.y - center.y) * amount,
+  }));
+}
+
+function addExteriorRoofShape3d(view, points, y, thickness, options) {
+  const THREE = window.THREE;
+  const shape = new THREE.Shape();
+  points.forEach((point, index) => {
+    const world = floorWorld(point.x, point.y, 0);
+    if (index === 0) {
+      shape.moveTo(world.x, -world.z);
+    } else {
+      shape.lineTo(world.x, -world.z);
+    }
+  });
+  shape.closePath();
+  const geometry = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: false });
+  geometry.rotateX(-Math.PI / 2);
+  const mesh = new THREE.Mesh(geometry, exteriorMaterial(view, options));
+  mesh.position.y = y;
+  view.exteriorGroup.add(mesh);
+  return mesh;
+}
+
+function buildExteriorShell3d(view) {
+  clearGroup3d(view.exteriorGroup);
+  view.exteriorMaterials = [];
+  addExteriorGround3d(view);
+  const width = (FLOOR_FOOTPRINT.right - FLOOR_FOOTPRINT.left) * FLOOR_3D.scale;
+  const depth = (FLOOR_FOOTPRINT.bottom - FLOOR_FOOTPRINT.top) * FLOOR_3D.scale;
+  const center = floorWorld(
+    (FLOOR_FOOTPRINT.left + FLOOR_FOOTPRINT.right) / 2,
+    (FLOOR_FOOTPRINT.top + FLOOR_FOOTPRINT.bottom) / 2,
+    0
+  );
+  const bodyColor = 0xf3f5f8;
+  const trimColor = 0x8f96af;
+  const glassColor = 0xa6cad5;
+  const signColor = 0xc94755;
+  const slabColor = 0x8a8fa7;
+  const frontWallZ = floorWorld((FLOOR_FOOTPRINT.left + FLOOR_FOOTPRINT.right) / 2, FLOOR_FOOTPRINT.bottom, 0).z;
+  const frontFeatureZ = frontWallZ + 0.09;
+  const wallHeight = 0.96;
+  const wallBaseTop = 0.27;
+  const wallCenterY = wallBaseTop + wallHeight / 2;
+  const copingHeight = 0.07;
+  const copingCenterY = wallBaseTop + wallHeight + copingHeight / 2;
+  const roofY = wallBaseTop + wallHeight + copingHeight + 0.012;
+  const roofPoints = exteriorRoofPerimeterPoints();
+
+  const addFrontWindow = (x, y, w = 0.42, h = 0.28) => {
+    addExteriorBox3d(view, w, h, 0.045, x, y, frontFeatureZ, {
+      color: glassColor, roughness: 0.99, metalness: 0, opacity: 0.88,
+    });
+    addExteriorBox3d(view, 0.028, h + 0.04, 0.05, x, y, frontFeatureZ + 0.01, {
+      color: trimColor, roughness: 0.99, metalness: 0, opacity: 0.98,
+    });
+    addExteriorBox3d(view, w + 0.05, 0.028, 0.05, x, y, frontFeatureZ + 0.01, {
+      color: trimColor, roughness: 0.99, metalness: 0, opacity: 0.98,
+    });
+  };
+
+  addExteriorRoofShape3d(view, roofPoints, 0.015, 0.255, {
+    color: slabColor, roughness: 0.99, metalness: 0, opacity: 0.96,
+  });
+
+  FLOOR_PERIMETER_WALLS.forEach((wall) => {
+    addExteriorWallSegment3d(view, wall, wallHeight, wallCenterY, 0.11, {
+      color: bodyColor,
+      opacity: 0.98,
+    });
+    addExteriorWallSegment3d(view, wall, copingHeight, copingCenterY, 0.15, {
+      color: trimColor,
+      opacity: 0.98,
+    });
+  });
+
+  addExteriorRoofShape3d(view, roofPoints, roofY, 0.07, {
+    color: 0xe7ebef,
+    roughness: 0.99,
+    metalness: 0,
+    opacity: 0.96,
+  });
+  addExteriorRoofShape3d(view, scaledPerimeterPoints(roofPoints, 0.86), roofY + 0.07, 0.035, {
+    color: 0xd9e0e5,
+    roughness: 0.99,
+    metalness: 0,
+    opacity: 0.82,
+  });
+
+  addExteriorBox3d(view, width * 0.13, 0.13, depth * 0.08, center.x - width * 0.08, roofY + 0.17, center.z - depth * 0.17, {
+    color: trimColor, roughness: 0.99, metalness: 0, opacity: 0.9,
+  });
+  addExteriorBox3d(view, width * 0.08, 0.1, depth * 0.06, center.x + width * 0.14, roofY + 0.155, center.z - depth * 0.2, {
+    color: trimColor, roughness: 0.99, metalness: 0, opacity: 0.86,
+  });
+
+  [-0.31, -0.12, 0.12, 0.31].forEach((offset) => {
+    addFrontWindow(center.x + width * offset, 1.02);
+    addFrontWindow(center.x + width * offset, 0.66);
+  });
+  [-0.4, -0.26, 0.26, 0.4].forEach((offset) => {
+    addFrontWindow(center.x + width * offset, 0.32, 0.34, 0.24);
+  });
+
+  addExteriorBox3d(view, width * 0.36, 0.24, 0.2, center.x, 0.56, frontFeatureZ + 0.015, {
+    color: signColor, roughness: 0.99, metalness: 0, opacity: 0.99,
+  });
+  addExteriorBox3d(view, width * 0.04, 0.72, 0.16, center.x - width * 0.14, 0.24, frontFeatureZ - 0.005, {
+    color: signColor, roughness: 0.99, metalness: 0, opacity: 0.99,
+  });
+  addExteriorBox3d(view, width * 0.04, 0.72, 0.16, center.x + width * 0.14, 0.24, frontFeatureZ - 0.005, {
+    color: signColor, roughness: 0.99, metalness: 0, opacity: 0.99,
+  });
+  addExteriorBox3d(view, width * 0.14, 0.6, 0.06, center.x, 0.18, frontFeatureZ - 0.06, {
+    color: glassColor, roughness: 0.99, metalness: 0, opacity: 0.88,
+  });
+  addExteriorBox3d(view, width * 0.145, 0.64, 0.03, center.x, 0.18, frontFeatureZ - 0.025, {
+    color: trimColor, roughness: 0.99, metalness: 0, opacity: 0.98,
+  });
+  addExteriorBox3d(view, 0.03, 0.64, 0.05, center.x, 0.18, frontFeatureZ - 0.022, {
+    color: trimColor, roughness: 0.99, metalness: 0, opacity: 0.98,
+  });
+
+  addExteriorDisk3d(view, 0.44, 0.09, center.x, 1.78, frontFeatureZ - 0.1, {
+    color: signColor,
+    roughness: 0.99,
+    metalness: 0,
+    opacity: 0.99,
+  });
+  addExteriorDisk3d(view, 0.34, 0.1, center.x, 1.78, frontFeatureZ - 0.03, {
+    color: 0xf6f8fb,
+    roughness: 0.99,
+    metalness: 0,
+    opacity: 0.99,
+  });
+  addExteriorBox3d(view, 0.28, 0.06, 0.06, center.x, 1.78, frontFeatureZ + 0.055, {
+    color: signColor,
+    roughness: 0.99,
+    metalness: 0,
+    opacity: 0.99,
+  });
+  addExteriorBox3d(view, 0.06, 0.28, 0.06, center.x, 1.78, frontFeatureZ + 0.055, {
+    color: signColor,
+    roughness: 0.99,
+    metalness: 0,
+    opacity: 0.99,
+  });
+  view.exteriorGroup.visible = false;
+}
+
+function showFloorShell3d(view) {
+  if (!view) return;
+  view.intro.armed = true;
+  view.intro.active = false;
+  view.modelGroup.visible = false;
+  view.controls.yaw = FLOOR_3D.defaultYaw + FLOOR_3D.introStartYawOffset;
+  view.controls.pitch = FLOOR_3D.introStartPitch;
+  view.controls.distance = FLOOR_3D.introStartDistance;
+  view.exteriorGroup.visible = true;
+  view.shell.classList.add("intro-active");
+  view.exteriorMaterials.forEach((material) => {
+    const baseOpacity = material.userData.baseOpacity ?? material.opacity ?? 1;
+    material.userData.baseOpacity = baseOpacity;
+    material.opacity = baseOpacity;
+  });
+}
+
+function startFloorIntro3d(view) {
+  if (!view) return;
+  view.intro.armed = false;
+  view.intro.active = true;
+  view.intro.startedAt = performance.now();
+  view.modelGroup.visible = true;
+  view.controls.yaw = FLOOR_3D.defaultYaw + FLOOR_3D.introStartYawOffset;
+  view.controls.pitch = FLOOR_3D.introStartPitch;
+  view.controls.distance = FLOOR_3D.introStartDistance;
+  view.exteriorGroup.visible = true;
+  view.shell.classList.add("intro-active");
+  view.exteriorMaterials.forEach((material) => {
+    const baseOpacity = material.userData.baseOpacity ?? material.opacity ?? 1;
+    material.userData.baseOpacity = baseOpacity;
+    material.opacity = baseOpacity;
+  });
+}
+
+function completeFloorIntro3d(view) {
+  if (!view || !view.intro.active) return;
+  view.intro.active = false;
+  view.controls.yaw = FLOOR_3D.defaultYaw;
+  view.controls.pitch = FLOOR_3D.defaultPitch;
+  view.controls.distance = FLOOR_3D.defaultDistance;
+  view.exteriorGroup.visible = false;
+  view.shell.classList.remove("intro-active");
+}
+
+function tickFloorIntro3d(view) {
+  if (!view?.intro.active) return;
+  const elapsed = performance.now() - view.intro.startedAt;
+  const t = clamp(elapsed / FLOOR_3D.introDurationMs, 0, 1);
+  const motion = clamp((elapsed - FLOOR_3D.introDelayMs) / (FLOOR_3D.introDurationMs - FLOOR_3D.introDelayMs), 0, 1);
+  const eased = motion < 0.5
+    ? 4 * motion * motion * motion
+    : 1 - Math.pow(-2 * motion + 2, 3) / 2;
+  const fade = clamp((motion - 0.46) / 0.54, 0, 1);
+  const fadeEased = fade * fade * (3 - 2 * fade);
+  view.controls.yaw = FLOOR_3D.defaultYaw + FLOOR_3D.introStartYawOffset * (1 - eased);
+  view.controls.pitch = FLOOR_3D.defaultPitch + (FLOOR_3D.introStartPitch - FLOOR_3D.defaultPitch) * (1 - eased);
+  view.controls.distance = FLOOR_3D.defaultDistance + (FLOOR_3D.introStartDistance - FLOOR_3D.defaultDistance) * (1 - eased);
+  view.exteriorMaterials.forEach((material) => {
+    const baseOpacity = material.userData.baseOpacity ?? material.opacity;
+    material.userData.baseOpacity = baseOpacity;
+    material.opacity = baseOpacity * (1 - fadeEased);
+  });
+  if (t >= 1) completeFloorIntro3d(view);
+}
+
 function floorPointerWorldPoint(view, clientX, clientY) {
   const rect = view.renderer.domElement.getBoundingClientRect();
   if (!rect.width || !rect.height) return null;
@@ -890,6 +1256,7 @@ function startFloor3dLoop() {
   const render = () => {
     if (!floorView) return;
     resizeFloor3d(floorView);
+    tickFloorIntro3d(floorView);
     updateFloorCamera3d(floorView);
     floorView.renderer.render(floorView.scene, floorView.camera);
     syncFloorRoomLabels3d();
@@ -905,8 +1272,11 @@ function roomMaterial3d(zone, active) {
     color: active ? 0xd8ddd9 : ROOM_3D_COLORS[zone.id] || 0xece9e2,
     roughness: 0.97,
     metalness: 0,
-    transparent: true,
-    opacity: active ? 0.98 : 0.92,
+    transparent: false,
+    opacity: 1,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
   });
 }
 
@@ -960,12 +1330,14 @@ function addGround3d(view) {
   );
   base.position.y = -0.035;
   base.receiveShadow = true;
+  base.renderOrder = 0;
   view.modelGroup.add(base);
 
   const grid = new THREE.GridHelper(24, 24, 0xc3c0b8, 0xe6e4de);
   grid.position.y = 0.012;
   grid.material.transparent = true;
   grid.material.opacity = 0.06;
+  grid.renderOrder = 1;
   view.modelGroup.add(grid);
 }
 

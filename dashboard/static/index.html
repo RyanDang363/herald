@@ -3,24 +3,25 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ER Twin — Live Floor</title>
+  <title>Herald - Live Floor</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body class="dashboard-body">
   <div class="dashboard-shell">
     <header class="topbar">
       <div class="brand-block">
-        <p class="eyebrow">ER Autonomous Twin</p>
-        <h1>AgentER Control Deck</h1>
-        <p class="hero-copy">Live operational view across beds, staff, patients, and oxygen risk.</p>
+        <p class="eyebrow">Herald</p>
+        <h1>Herald</h1>
+        <p class="hero-subline">Hospital Emergency Room Agentic Live Digital Twin</p>
+        <p class="hero-copy">Live operational view across beds, staff, patient flow, and equipment risk.</p>
       </div>
       <div class="meta">
-        <span id="banner" class="banner hidden">data source unavailable — showing last known state</span>
+        <span id="banner" class="banner hidden">data source unavailable - showing last known state</span>
         <span class="meta-cluster">
           <span id="live-dot" class="live-dot" title="live"></span>
           <span class="meta-label">Live</span>
         </span>
-        <span id="updated" class="updated">—</span>
+        <span id="updated" class="updated">-</span>
         <a class="logout" href="/logout">Sign out</a>
       </div>
     </header>
@@ -28,15 +29,11 @@
     <section class="hero-band">
       <div class="hero-stat">
         <span class="hero-stat-label">Mode</span>
-        <strong>Read-only Ops Surface</strong>
+        <strong>Clinical digital twin</strong>
       </div>
       <div class="hero-stat">
         <span class="hero-stat-label">Focus</span>
-        <strong>Floor coordination and alert visibility</strong>
-      </div>
-      <div class="hero-stat">
-        <span class="hero-stat-label">Interaction</span>
-        <strong>Select any marker for live detail</strong>
+        <strong>Care-floor visibility and alert coordination</strong>
       </div>
     </section>
 
@@ -47,9 +44,9 @@
         <div class="panel-topline">
           <div>
             <p class="section-kicker">Facility</p>
-            <h2>ER Floor</h2>
+            <h2>Emergency Floor</h2>
           </div>
-          <p class="panel-note">Interactive 3D operational prototype. Select markers for live detail.</p>
+          <p class="panel-note">Interactive floor model for beds, staff, patient movement, and equipment risk.</p>
         </div>
         <div id="floor-map" class="floor-map"></div>
       </section>
@@ -94,7 +91,7 @@
     </main>
 
     <footer id="command-bar" class="command-bar hidden">
-      <input id="command-input" type="text" placeholder="Type a command for the orchestrator…" />
+      <input id="command-input" type="text" placeholder="Type a command for the orchestrator..." />
       <button id="command-send">Send</button>
     </footer>
   </div>
@@ -107,7 +104,7 @@
           <p id="detail-kicker" class="detail-kicker">Selection</p>
           <h2 id="detail-title" class="detail-title">Live detail</h2>
         </div>
-        <button id="detail-close" class="detail-close" type="button" aria-label="Close details">×</button>
+        <button id="detail-close" class="detail-close" type="button" aria-label="Close details">x</button>
       </div>
       <p id="detail-sub" class="detail-sub">Choose a patient or staff member to inspect live state.</p>
       <div id="detail-body" class="detail-body"></div>
