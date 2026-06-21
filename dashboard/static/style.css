@@ -68,8 +68,27 @@ body.detail-open { overflow: hidden; }
 .brand-block {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   max-width: 640px;
+}
+
+.brand-head {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-width: 0;
+}
+
+.brand-logo {
+  width: clamp(52px, 5vw, 78px);
+  height: clamp(52px, 5vw, 78px);
+  flex: none;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 16px rgba(32, 56, 68, 0.12));
+}
+
+.brand-title {
+  min-width: 0;
 }
 
 .eyebrow,
@@ -90,9 +109,8 @@ header h1 {
   max-width: none;
   font-family: var(--title-font);
   font-weight: 610;
-  font-size: clamp(24px, 2.8vw, 36px);
-  line-height: 1;
-  color: var(--ok);
+  font-size: clamp(42px, 5.4vw, 68px);
+  line-height: 0.94;
 }
 
 .hero-subline {
@@ -284,6 +302,10 @@ header h1 {
 .panel.wide { grid-column: 1 / -1; }
 .floor-panel { padding: 16px 16px 18px; }
 
+.floor-panel .panel-topline h2 {
+  font-size: clamp(32px, 3.2vw, 48px);
+}
+
 .panel h2 {
   margin: 2px 0 0;
   font-family: var(--title-font);
@@ -355,6 +377,11 @@ header h1 {
   cursor: grabbing;
 }
 
+.floor-camera-locked .floor-canvas-wrap,
+.floor-camera-locked .floor-canvas-wrap.dragging {
+  cursor: default;
+}
+
 .floor-canvas-wrap canvas {
   display: block;
   width: 100%;
@@ -380,6 +407,7 @@ header h1 {
 .floor-shell-3d.intro-active .floor-token-layer,
 .floor-shell-3d.intro-active .floor-room-label-layer,
 .floor-shell-3d.intro-active .floor-legend,
+.floor-shell-3d.intro-active .floor-lock-control,
 .floor-shell-3d.intro-active .floor-focus-strip,
 .floor-shell-3d.intro-active .floor-view-controls,
 .floor-shell-3d.intro-active .floor-hud {
@@ -446,8 +474,23 @@ header h1 {
 .floor-shell-3d .floor-token.patient .token-core { background: #59758d; }
 .floor-shell-3d .floor-token.nurse .token-core { background: #627a6b; }
 .floor-shell-3d .floor-token.doctor .token-core { background: #756c80; }
-.floor-shell-3d .floor-token.bed .token-core { background: #91989d; }
+.floor-shell-3d .floor-token.bed .token-core {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: #87959d;
+  box-shadow: none;
+}
 .floor-shell-3d .floor-token.equipment .token-core { background: #9b7d58; }
+
+.floor-shell-3d .floor-token.bed:hover .token-core,
+.floor-shell-3d .floor-token.bed.active .token-core,
+.floor-shell-3d .floor-token.bed:focus-visible .token-core {
+  transform: none;
+  box-shadow: none;
+}
 
 .floor-shell-3d .floor-token.moving {
   animation: none;
@@ -472,7 +515,17 @@ header h1 {
   transition: opacity 0.32s ease;
 }
 
+.floor-lock-control {
+  position: absolute;
+  right: 14px;
+  top: 64px;
+  z-index: 12;
+  pointer-events: auto;
+  transition: opacity 0.32s ease;
+}
+
 .floor-view-controls button,
+.floor-lock-control button,
 .floor-focus-strip button {
   min-height: 32px;
   border: 1px solid rgba(99, 123, 134, 0.18);
@@ -489,6 +542,11 @@ header h1 {
 .floor-view-controls button {
   min-width: 36px;
   padding: 0 11px;
+}
+
+.floor-lock-control button {
+  min-width: 92px;
+  padding: 0 13px;
 }
 
 .floor-focus-strip {
@@ -509,7 +567,10 @@ header h1 {
 }
 
 .floor-view-controls button:hover,
+.floor-lock-control button:hover,
 .floor-focus-strip button:hover,
+.floor-view-controls button.active,
+.floor-lock-control button.active,
 .floor-focus-strip button.active {
   border-color: rgba(83,127,139,0.32);
   background: rgba(231,238,241,0.92);
@@ -517,6 +578,7 @@ header h1 {
 }
 
 .floor-view-controls button:focus-visible,
+.floor-lock-control button:focus-visible,
 .floor-focus-strip button:focus-visible {
   outline: none;
   border-color: rgba(15,109,120,0.68);
@@ -794,10 +856,14 @@ header h1 {
 .floor-token.doctor .token-core { background: #766d82; }
 
 .floor-token.bed .token-core {
+  width: 26px;
   min-width: 26px;
   height: 26px;
+  padding: 0;
+  border: 0;
   background: #8a99a3;
   font-size: 10px;
+  box-shadow: none;
 }
 
 .floor-token.equipment .token-core {
