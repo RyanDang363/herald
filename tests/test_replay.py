@@ -170,3 +170,222 @@ def test_intake_milestones_map_to_a_coherent_brief(tmp_path):
     assert brief["timeline"][0]["action"] == "intake_received"
     assert any(e["action"] == "intake_complete" for e in brief["timeline"])
     assert (out / "incident_replay_brief.json").exists() and (out / "pika_prompt.md").exists()
+
+
+def test_intake_on_milestone_captures_distinct_intermediate_states():
+    # @spec REPLAY-SNAP-001 — the intake on_milestone hook snapshots the store AT each milestone, so the
+    # timeline holds real intermediate states (waiting -> triaged -> admitted), not just the final one.
+    store = InMemoryStore()
+    for module in (patient, bed, nurse, doctor):
+        module.init_state(store)
+    rec = replay.ReplayRecorder()
+    seqs: list[int] = []
+
+    def capture(action, target, detail):
+        actor = replay.actor_for(action)
+        line = rec.log(store, "intake", actor, action, target, **detail)
+        rec.snapshot(store, line["seq"], float(line["seq"]), action=action, actor=actor, target=target)
+        seqs.append(line["seq"])
+
+    orchestrator.run_intake(store, "Jordan Lee", "chest pain", {"spo2": 96}, on_milestone=capture)
+    statuses = [
+        (s["entities"]["patients"][0]["status"] if s["entities"]["patients"] else None)
+        for s in rec.snapshots_for(seqs)
+    ]
+    assert "waiting" in statuses and "admitted" in statuses  # state genuinely advanced across snapshots
+    # More than one distinct state-change frame (else the replay would be a single static image).
+    assert len(replay.select_keyframes(rec.timeline, cap=99)) > 2
+
+
+# --- REPLAY-SNAP-001/002/003: full-state snapshot timeline (data-driven replay, LLD §9.1) ---
+
+
+def _snapshot_store() -> InMemoryStore:
+    store = InMemoryStore()
+    store.set("er:patient:p1", {"id": "p1", "name": "Jordan Lee", "status": "waiting"})
+    store.set("er:bed:bed1", {"id": "bed1", "status": "available"})
+    store.set("er:nurse:nurse1", {"id": "nurse1", "available": True})
+    return store
+
+
+def test_snapshot_captures_all_entities_with_ts():
+    # @spec REPLAY-SNAP-001 — every entity record + a real ts; er:events line shape is NOT touched here.
+    store = _snapshot_store()
+    rec = replay.ReplayRecorder()
+    snap = rec.snapshot(store, seq=0, ts=1718900000.5, action="record_created", actor="admissions", target="p1")
+
+    assert set(snap) == {"seq", "ts", "action", "actor", "target", "entities"}
+    assert snap["ts"] == 1718900000.5
+    assert set(snap["entities"]) == {"patients", "beds", "nurses", "doctors", "equipment"}
+    assert snap["entities"]["patients"][0]["id"] == "p1"
+    assert snap["entities"]["doctors"] == []  # none in the store -> empty list, not missing
+
+
+def test_snapshot_is_independent_of_later_mutation():
+    # @spec REPLAY-SNAP-001 — the captured records are copies, not live references.
+    store = _snapshot_store()
+    rec = replay.ReplayRecorder()
+    rec.snapshot(store, seq=0, ts=1.0, action="record_created", actor="admissions", target="p1")
+    store.update("er:patient:p1", {"status": "admitted"})
+    assert rec.timeline[0]["entities"]["patients"][0]["status"] == "waiting"
+
+
+def test_snapshot_deep_copies_nested_fields():
+    # @spec REPLAY-SNAP-001 — a snapshot is an immutable point-in-time capture: even an in-place mutation
+    # of a nested field in the live store must NOT bleed into an already-captured snapshot.
+    store = InMemoryStore()
+    store.set("er:patient:p1", {"id": "p1", "vitals": {"spo2": 97}, "care_team": ["nurse1"]})
+    rec = replay.ReplayRecorder()
+    rec.snapshot(store, seq=0, ts=1.0, action="record_created", actor="admissions", target="p1")
+    # Mutate the live record's nested objects IN PLACE (not via store.update replacement).
+    store._data["er:patient:p1"]["vitals"]["spo2"] = 50
+    store._data["er:patient:p1"]["care_team"].append("doc1")
+    captured = rec.timeline[0]["entities"]["patients"][0]
+    assert captured["vitals"]["spo2"] == 97
+    assert captured["care_team"] == ["nurse1"]
+
+
+def test_snapshot_idempotent_overwrite_by_seq():
+    # @spec REPLAY-SNAP-002 — re-capturing the same seq overwrites, never duplicates.
+    store = _snapshot_store()
+    rec = replay.ReplayRecorder()
+    rec.snapshot(store, seq=0, ts=1.0, action="record_created", actor="admissions", target="p1")
+    store.update("er:patient:p1", {"status": "admitted"})
+    rec.snapshot(store, seq=0, ts=2.0, action="bed_assigned", actor="bed", target="p1")
+
+    assert len(rec.timeline) == 1
+    assert rec.timeline[0]["ts"] == 2.0
+    assert rec.timeline[0]["action"] == "bed_assigned"
+    assert rec.timeline[0]["entities"]["patients"][0]["status"] == "admitted"
+
+
+def test_snapshot_timeline_orders_by_seq():
+    # @spec REPLAY-SNAP-001 — timeline + snapshots_for return seq-ordered records regardless of insert order.
+    store = _snapshot_store()
+    rec = replay.ReplayRecorder()
+    for seq in (2, 0, 1):
+        rec.snapshot(store, seq=seq, ts=float(seq), action=f"a{seq}", actor="orchestrator")
+    assert [s["seq"] for s in rec.timeline] == [0, 1, 2]
+    assert [s["seq"] for s in rec.snapshots_for([0, 2])] == [0, 2]
+
+
+def test_log_line_shape_unchanged_by_snapshot_wiring():
+    # @spec REPLAY-LOG-002 (guard) — capturing snapshots must NOT alter the er:events line shape and
+    # must add no wall-clock field to the published line.
+    store = _snapshot_store()
+    rec = replay.ReplayRecorder()
+    line = rec.log(store, "intake", "admissions", "record_created", "p1")
+    rec.snapshot(store, seq=line["seq"], ts=1718900000.0, action="record_created", actor="admissions", target="p1")
+    published = _published(store)[-1]
+    assert set(published) == {"seq", "event", "actor", "action", "target", "detail"}
+    assert "ts" not in published and "timestamp" not in published and "time" not in published
+
+
+class _PublishBoom(InMemoryStore):
+    def publish(self, channel: str, msg: str) -> None:
+        raise RuntimeError("redis publish down")
+
+
+class _ReadBoom(InMemoryStore):
+    def list_ids(self, entity: str) -> list[str]:
+        raise RuntimeError("redis read down")
+
+
+def test_log_milestone_is_best_effort_on_backend_fault():
+    # @spec REPLAY-SNAP-001 (best-effort) — replay capture is additive observation, so a transient
+    # backend fault (RedisStore publish/read timeout) must NEVER raise out of the milestone path and
+    # abort the live ER command. A publish fault -> no line, nothing appended; a snapshot-read fault ->
+    # the line still returns (event feed succeeded), the snapshot is just skipped.
+    from er_twin.agents import orchestrator
+
+    orchestrator._replay = replay.ReplayRecorder()
+    buf: list[dict] = []
+    line = orchestrator._record_milestone(buf, _PublishBoom(), "intake", "admissions", "record_created", "p1")
+    assert line is None and buf == []  # publish failed -> skipped, no exception
+
+    orchestrator._replay = replay.ReplayRecorder()
+    line2 = orchestrator._log_milestone(_ReadBoom(), "intake", "admissions", "record_created", "p1")
+    assert line2 is not None and line2["action"] == "record_created"  # feed line still produced
+    assert orchestrator._replay.timeline == []  # snapshot capture skipped on the read fault
+
+
+def _intake_snapshots() -> list[dict]:
+    store = _snapshot_store()
+    rec = replay.ReplayRecorder()
+    rec.snapshot(store, seq=0, ts=1000.0, action="intake_received", actor="orchestrator", target=None)
+    store.update("er:patient:p1", {"status": "admitted", "assigned_bed": "bed1"})
+    rec.snapshot(store, seq=1, ts=1006.0, action="bed_assigned", actor="bed", target="bed1")
+    rec.snapshot(store, seq=2, ts=1012.0, action="nurse_assigned", actor="nurse", target="nurse1")
+    return rec.timeline
+
+
+def test_export_timeline_writes_file_with_metadata(tmp_path):
+    # @spec REPLAY-SNAP-003 @spec REPLAY-LIB-001 — ordered snapshots + derived library metadata.
+    out = tmp_path / "out"
+    names = {"bed1": "bed-1", "nurse1": "Nurse Maya"}
+    record = replay.export_incident_timeline(
+        _intake_snapshots(), "patient_intake-0001", "patient_intake",
+        "Chest pain intake", "Jordan Lee admitted to bed-1.",
+        display=lambda x: names.get(x, x), out_dir=str(out),
+    )
+    path = out / "replay" / "patient_intake-0001.json"
+    assert path.exists()
+    on_disk = json.loads(path.read_text())
+    assert on_disk == record
+    assert record["incident_type"] == "patient_intake"
+    assert [s["seq"] for s in record["snapshots"]] == [0, 1, 2]
+    assert record["start_ts"] == 1000.0 and record["end_ts"] == 1012.0
+    assert record["video_url"] is None
+    assert record["speed_factor"] == replay.DEFAULT_SPEED_FACTOR
+    # involved = distinct actors+targets (in encounter order) via display(); None target dropped.
+    assert record["involved"] == ["orchestrator", "bed", "bed-1", "nurse", "Nurse Maya"]
+
+
+def test_export_timeline_no_snapshots_writes_nothing(tmp_path):
+    # @spec REPLAY-SNAP-003 — no milestones ran -> no empty artifact.
+    out = tmp_path / "out"
+    result = replay.export_incident_timeline(
+        [], "patient_intake-0001", "patient_intake", "t", "s", out_dir=str(out)
+    )
+    assert result is None
+    assert not (out / "replay").exists()
+
+
+# --- REPLAY-LIB-002: time compression to Pika's allowed durations ---
+
+
+def test_requested_clip_duration_compresses_and_clamps():
+    # @spec REPLAY-LIB-002 — real_elapsed / speed_factor, snapped to {5, 10}.
+    assert replay.requested_clip_duration(0.0, 30.0, speed_factor=10) == 5    # 3s -> floor 5
+    assert replay.requested_clip_duration(0.0, 90.0, speed_factor=10) == 10   # 9s -> nearest 10
+    assert replay.requested_clip_duration(0.0, 600.0, speed_factor=10) == 10  # 60s -> clamp 10
+    assert replay.requested_clip_duration(0.0, 70.0, speed_factor=10) == 5    # 7s -> nearest 5
+    assert replay.requested_clip_duration(None, None) == 5                    # missing -> min
+    assert replay.requested_clip_duration(5.0, 5.0) == 5                      # zero elapsed -> min
+
+
+# --- REPLAY-KEY-001: keyframe selection (pure, no browser) ---
+
+
+def _keyframe_snapshots() -> list[dict]:
+    # Four snapshots; seq 1 and 2 share identical entities (no state change between them).
+    a = {"patients": [{"id": "p1", "status": "waiting"}]}
+    b = {"patients": [{"id": "p1", "status": "admitted"}]}
+    c = {"patients": [{"id": "p1", "status": "in_treatment"}]}
+    return [
+        {"seq": 0, "ts": 0.0, "entities": a},
+        {"seq": 1, "ts": 1.0, "entities": b},
+        {"seq": 2, "ts": 2.0, "entities": b},  # unchanged from seq 1 -> dropped as a state-change frame
+        {"seq": 3, "ts": 3.0, "entities": c},
+    ]
+
+
+def test_select_keyframes_drops_unchanged_then_caps_to_start_end():
+    # @spec REPLAY-KEY-001 — state-change snapshots, capped at KEYFRAME_CAP (2) -> start + end.
+    snaps = _keyframe_snapshots()
+    # No cap: the unchanged seq 2 is dropped, leaving the three state-change frames.
+    assert [s["seq"] for s in replay.select_keyframes(snaps, cap=99)] == [0, 1, 3]
+    # Verified Pika cap (2): degrade to first + last state-change frame.
+    assert [s["seq"] for s in replay.select_keyframes(snaps, cap=replay.KEYFRAME_CAP)] == [0, 3]
+    assert replay.KEYFRAME_CAP == 2
+    assert replay.select_keyframes([], cap=2) == []

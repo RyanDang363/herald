@@ -10,7 +10,8 @@ Fill in names. Tracks map to the phases in the implementation plan.
 
 | Track | Owner | Files | Plan phases |
 |---|---|---|---|
-| **Agents** — all agent logic (critical path) | **Evan** | `er_twin/main.py`, `er_twin/addresses.py`, `er_twin/replay.py`, `er_twin/agents/orchestrator.py`, `er_twin/agents/stub.py`, `er_twin/agents/{admissions,triage,patient,bed,nurse,doctor,equipment}.py`, all `tests/test_event_*.py`, `tests/test_domain_invariants.py`, `tests/test_patient_pool.py`, `tests/test_replay.py`, `scripts/build_pika_prompt.py`, `scripts/run_pika_identity_check.ps1`, `scripts/run_pika_replay.ps1`, `scripts/pika_replay_operator.md`, `scripts/demo.md` | Phase 1, 2, 3, 4, 5, R, P |
+| **Agents** — all agent logic (critical path) | **Evan** | `er_twin/main.py`, `er_twin/addresses.py`, `er_twin/replay.py`, `er_twin/agents/orchestrator.py`, `er_twin/agents/stub.py`, `er_twin/agents/{admissions,triage,patient,bed,nurse,doctor,equipment}.py`, all `tests/test_event_*.py`, `tests/test_domain_invariants.py`, `tests/test_patient_pool.py`, `tests/test_replay.py`, `scripts/build_pika_prompt.py`, `scripts/run_pika_identity_check.ps1`, `scripts/run_pika_replay.ps1`, `scripts/run_pika_keyframes.ps1`, `scripts/capture_replay_frames.py`, `scripts/pika_replay_operator.md`, `scripts/demo.md` | Phase 1, 2, 3, 4, 5, R, R+, P |
+| **Data-driven replay UI** (LLD §9.1) — shares the dashboard | **Evan** (+ dashboard dev) | `dashboard/static/floor.js` (extracted from `app.js`), `dashboard/static/replay.{html,js}`, `dashboard/static/library.{html,js}`, replay/library routes in `dashboard/server.py`, replay/library tests in `tests/test_dashboard.py` | R+ |
 | **Redis layer** — storage backend | _dev 2_ | `er_twin/storage.py` (`RedisStore` implementation only — `InMemoryStore` already scaffolded), `tests/test_storage.py` (extend with `RedisStore` contract tests) | Phase 6 |
 | **Dashboard** — admin UI | _dev 3_ | `dashboard/` (FastAPI server + HTML/JS frontend reading store state) | Stretch |
 
@@ -106,12 +107,13 @@ Code CLI invokes Pika MCP to turn that trace into replay media._
 2. ASI:One reaches our **Agentverse-registered OrchestratorAgent** (inside the single Bureau — the only public surface).
 3. Orchestrator triggers a real **local Bureau event** (intake / oxygen / summary) — in-process, same Bureau.
 4. ER agents coordinate and **update state + the `er:events` log**.
-5. Orchestrator **replies in chat** with what happened.
-6. System emits a **Pika-ready replay brief** (`out/incident_replay_brief.json` + `out/pika_prompt.md`).
-7. **`scripts/run_pika_replay.ps1` → Claude Code CLI → Pika MCP** generate the incident replay → `out/pika_result.json` (pre-generated before judging; the live CLI run is shown as proof-of-work; fal.ai is the optional fallback).
+5. Orchestrator **replies in chat** with what happened (incl. a `Replay captured → /replay/{incident}` link).
+6. System emits a **Pika-ready replay brief** (`out/incident_replay_brief.json` + `out/pika_prompt.md`) **and** a full-state **snapshot timeline** (`out/replay/{incident}.json`) for the data-driven replay (LLD §9.1).
+7. **Data-driven replay (preferred):** `python -m scripts.capture_replay_frames {incident}` (Playwright) → keyframe PNGs → **`scripts/run_pika_keyframes.ps1`** → Claude Code CLI → Pika `generate_keyframes_video` → clip URL written back into `out/replay/{incident}.json` as `video_url`. The gated **`/library`** page lists every incident with its clip; **`/replay/{incident}`** plays the reconstruction in-browser as the offline fallback. (Text-brief `scripts/run_pika_replay.ps1` is the documented fallback.)
 
 Steps 1–6 are pure Fetch.ai (the judging path). Step 7 is automated creative post-processing — Pika
-MCP is never called from inside the uAgents runtime, only by the Claude Code CLI.
+MCP is never called from inside the uAgents runtime, only by the Claude Code CLI. The `/replay` and
+`/library` pages reuse the dashboard's `floor.js`, so the replay map matches the live floor exactly.
 
 ## Demo-day roles
 

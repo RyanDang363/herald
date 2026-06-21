@@ -8,6 +8,8 @@ Fetch.ai uAgents + Bureau · ASI:One · in-memory/Redis state · Pika MCP replay
 
 **One-liner:** *Fetch.ai coordinates the ER response; ASI:One exposes the public chat interface; StorageInterface/Redis records the event trace; Claude Code CLI invokes Pika MCP to turn that trace into replay media.*
 
+> **Connecting as a teammate or judge?** See [`AGENT.md`](AGENT.md) for how to reach the canonical ER Twin Orchestrator on ASI:One / Agentverse — and why you should **not** re-register your own copy.
+
 ---
 
 ## Feasibility Verdict
@@ -86,6 +88,17 @@ private ER entity agents. ASI:One discovers and chats with **only** the Orchestr
 single external surface. State lives behind a `StorageInterface` (InMemoryStore first, Redis later).
 After an event runs, the system exports an incident trace that the **Claude Code CLI → Pika MCP**
 turn into replay media — an automated post-processing step, *not* part of the Fetch runtime.
+
+**Data-driven replay (LLD §9.1).** Beyond the narrative brief, every milestone also captures a
+full-state ER snapshot (with a real `ts`) into `out/replay/{incident}.json`. A `/replay/{incident}`
+page replays it on the **same SVG floor map as the live dashboard** (shared `floor.js`), tweening
+tokens between snapshots in real time. The milestone keyframes are rasterized to PNGs
+(`scripts/capture_replay_frames.py`, Playwright) and fed to Pika `generate_keyframes_video`
+(`scripts/run_pika_keyframes.ps1`) for a time-compressed start→end clip; the returned `video_url` is
+written back into the incident file and embedded in a gated `/library` page that lists every incident
+this session. So Pika reconstructs **ground-truth state**, not a hallucination — and if Pika is
+skipped, `/replay/{incident}` still plays the reconstruction. `er:events` / `REPLAY-LOG-002` are
+unchanged (`ts` lives only on the snapshot records).
 
 **Single-process runtime (P1 default):**
 

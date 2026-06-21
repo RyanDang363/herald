@@ -140,14 +140,61 @@ def live_snapshot() -> dict:
     return snapshot(get_store())
 
 
+def _event_row(entry_id: str, line: dict) -> dict:
+    """Map one `er:events` stream line ({seq,event,actor,action,target,detail}) to a display row.
+
+    The Orchestrator's `ReplayRecorder` publishes those structured lines; the dashboard renders the
+    `{ts, event, detail}` shape its feed expects (the same shape as the fixture events). `ts` is the
+    Redis stream entry id's millisecond component (the broker's wall-clock, not er_twin's).
+    @spec DASH-SYS-003
+    """
+    detail = line.get("detail") or {}
+    detail_str = ", ".join(f"{k}={v}" for k, v in detail.items() if v not in (None, ""))
+    text = line.get("action", "event")
+    target = line.get("target")
+    if target:
+        text += f" → {target}"
+    if detail_str:
+        text += f" ({detail_str})"
+    ts = entry_id.split("-")[0] if isinstance(entry_id, str) else str(entry_id)
+    return {"ts": ts, "event": line.get("event", "event"), "detail": text}
+
+
+def _redis_events(maxlen: int = 50) -> list[dict]:
+    """Read the most recent `er:events` stream lines from Redis (newest-capped, returned oldest-first).
+
+    Polled by `/api/events`; uses XREVRANGE on the same Stream `RedisStore.publish` XADDs to, so the
+    dashboard replays history a live subscriber would miss. Any connection/parse error degrades to an
+    empty feed rather than erroring the endpoint (read-only, best-effort). @spec DASH-SYS-002, DASH-SYS-003
+    """
+    client = getattr(get_store(), "_client", None)
+    if client is None:
+        return []
+    try:
+        entries = client.xrevrange("er:events", count=maxlen)
+    except Exception:  # noqa: BLE001 — a dead/unreachable Redis must not 500 the dashboard.
+        return []
+    rows: list[dict] = []
+    for entry_id, fields in entries:
+        try:
+            line = json.loads(fields.get("msg", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        rows.append(_event_row(entry_id, line))
+    rows.reverse()  # XREVRANGE is newest-first; the feed reads oldest-first.
+    return rows
+
+
 def current_events() -> list[dict]:
-    """Event lines for the current source. @spec DASH-SIM-002, DASH-API-004"""
+    """Event lines for the current source. @spec DASH-SIM-002, DASH-API-004, DASH-SYS-003"""
     global _fixture_buffer
     if settings.dashboard_source == "sim":
         from .sim import controller
 
         _, events = controller.state_and_events(time.monotonic())
         return events
+    if settings.dashboard_source == "redis":
+        return _redis_events()
     if _fixture_buffer is None:
         _fixture_buffer = build_event_buffer()
     return _fixture_buffer.recent()

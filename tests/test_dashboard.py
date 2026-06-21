@@ -1,5 +1,7 @@
 """Tests for the read-only admin dashboard (fixture mode). Traces to docs/specs/dashboard-specs.md."""
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -9,6 +11,39 @@ from dashboard import server
 from dashboard.server import app
 
 CREDS = {"username": "admin", "password": "password"}
+
+
+@pytest.fixture
+def replay_dir(tmp_path, monkeypatch):
+    """Point the server's incident-replay dir at a temp folder. @spec REPLAY-FRAME-002, REPLAY-LIB-004"""
+    d = tmp_path / "replay"
+    d.mkdir()
+    monkeypatch.setattr(server, "_REPLAY_DIR", d)
+    return d
+
+
+def _write_incident(replay_dir, incident_id="patient_intake-0001", **overrides) -> dict:
+    record = {
+        "incident_id": incident_id,
+        "incident_type": "patient_intake",
+        "title": "Chest pain intake — ESI-2",
+        "summary": "Jordan Lee admitted to bed-1.",
+        "speed_factor": 10,
+        "start_ts": 1000.0,
+        "end_ts": 1012.0,
+        "involved": ["Jordan Lee", "bed-1", "Nurse Maya"],
+        "video_url": None,
+        "snapshots": [
+            {"seq": 0, "ts": 1000.0, "action": "intake_received", "actor": "orchestrator",
+             "target": None, "entities": {"patients": [], "beds": [], "nurses": [], "doctors": [], "equipment": []}},
+            {"seq": 1, "ts": 1006.0, "action": "bed_assigned", "actor": "bed", "target": "bed1",
+             "entities": {"patients": [{"id": "p1", "status": "admitted", "assigned_bed": "bed1"}],
+                          "beds": [{"id": "bed1", "status": "occupied"}], "nurses": [], "doctors": [], "equipment": []}},
+        ],
+    }
+    record.update(overrides)
+    (replay_dir / f"{incident_id}.json").write_text(json.dumps(record), encoding="utf-8")
+    return record
 
 
 def new_client() -> TestClient:
@@ -205,6 +240,116 @@ def test_derive_summary_tolerates_partial_records():
 def test_fixture_is_default_source():
     # Guards the read-only baseline assumption used by the tests above. @spec DASH-SYS-001
     assert datasource.settings.dashboard_source == "fixture"
+
+
+# --- Incident replay endpoints (data-driven replay, LLD §9.1) -----------------
+
+
+# @spec REPLAY-FRAME-002 — the timeline endpoint returns the ordered snapshots (with ts) from the file
+def test_api_replay_returns_ordered_timeline(replay_dir):
+    _write_incident(replay_dir)
+    body = new_client().get("/api/replay/patient_intake-0001").json()
+    assert body["incident_id"] == "patient_intake-0001"
+    assert [s["seq"] for s in body["snapshots"]] == [0, 1]
+    assert all("ts" in s for s in body["snapshots"])
+    assert body["start_ts"] == 1000.0 and body["end_ts"] == 1012.0
+
+
+# @spec REPLAY-FRAME-001 — the replay page is served (it fetches the timeline + reuses floor.js)
+def test_replay_page_served(replay_dir):
+    r = new_client().get("/replay/patient_intake-0001")
+    assert r.status_code == 200
+    assert "replay.js" in r.text and "floor.js" in r.text
+
+
+# @spec REPLAY-FRAME-002 — a missing incident returns 404, not a 500
+def test_api_replay_missing_incident_404(replay_dir):
+    assert new_client().get("/api/replay/does-not-exist").status_code == 404
+
+
+# @spec REPLAY-FRAME-002 — a corrupt/half-written incident file degrades to 404, never a 500
+def test_api_replay_corrupt_file_404(replay_dir):
+    (replay_dir / "patient_intake-0001.json").write_text("{not valid json", encoding="utf-8")
+    assert new_client().get("/api/replay/patient_intake-0001").status_code == 404
+
+
+# @spec REPLAY-FRAME-002 — replay endpoints need no auth (public synthetic replay; capturer/judges open it)
+def test_api_replay_public(replay_dir):
+    _write_incident(replay_dir)
+    assert new_client().get("/api/replay/patient_intake-0001").status_code == 200
+
+
+# A traversal-style id is rejected (the strict id allowlist also blocks path traversal).
+def test_api_replay_rejects_unsafe_id(replay_dir):
+    assert new_client().get("/api/replay/..%2f..%2fsecret").status_code == 404
+
+
+# --- Incident library (session-only, gated, LLD §9.1) -------------------------
+
+
+# @spec REPLAY-LIB-004 — the library lists every incident in out/replay/ with its metadata + video
+def test_api_library_lists_incidents(auth_client, replay_dir):
+    _write_incident(replay_dir, "patient_intake-0001",
+                    video_url="https://cdn.pika.test/clip1.mp4")
+    _write_incident(replay_dir, "low_oxygen_alert-0001", incident_type="low_oxygen_alert",
+                    title="Low-oxygen response — bed-3", summary="O2 swapped on bed-3.",
+                    involved=["bed-3", "Nurse Chen"])
+    body = auth_client.get("/api/library").json()
+    ids = {e["incident_id"] for e in body["incidents"]}
+    assert ids == {"patient_intake-0001", "low_oxygen_alert-0001"}
+    by_id = {e["incident_id"]: e for e in body["incidents"]}
+    entry = by_id["patient_intake-0001"]
+    assert entry["video_url"] == "https://cdn.pika.test/clip1.mp4"
+    assert entry["incident_type"] == "patient_intake"
+    assert entry["start_ts"] == 1000.0 and entry["end_ts"] == 1012.0
+    assert entry["involved"] == ["Jordan Lee", "bed-1", "Nurse Maya"]
+    assert entry["replay_url"] == "/replay/patient_intake-0001"
+    # heavy snapshot payload is NOT shipped in the library list — only the count
+    assert "snapshots" not in entry and entry["snapshot_count"] == 2
+
+
+# @spec REPLAY-LIB-005 — an incident with no video_url still lists, with the /replay fallback link
+def test_api_library_entry_without_video_still_lists(auth_client, replay_dir):
+    _write_incident(replay_dir, "patient_intake-0001", video_url=None)
+    entry = auth_client.get("/api/library").json()["incidents"][0]
+    assert entry["video_url"] is None
+    assert entry["replay_url"] == "/replay/patient_intake-0001"  # fallback the page links to
+
+
+# @spec REPLAY-LIB-004 — the library API + page require auth (reuses the dashboard gate)
+def test_library_requires_auth(replay_dir):
+    assert new_client().get("/api/library").status_code == 401
+    r = new_client().get("/library", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/login"
+
+
+# Empty session library is an empty list, not an error.
+def test_api_library_empty(auth_client, replay_dir):
+    assert auth_client.get("/api/library").json() == {"incidents": []}
+
+
+# A corrupt incident file is skipped, not fatal to the whole library.
+def test_api_library_skips_corrupt_file(auth_client, replay_dir):
+    _write_incident(replay_dir, "patient_intake-0001")
+    (replay_dir / "broken.json").write_text("{not json", encoding="utf-8")
+    ids = {e["incident_id"] for e in auth_client.get("/api/library").json()["incidents"]}
+    assert ids == {"patient_intake-0001"}
+
+
+# Valid JSON that is NOT an object (e.g. a bare list) is skipped, not a 500 (record.get would AttributeError).
+def test_api_library_skips_non_dict_json(auth_client, replay_dir):
+    _write_incident(replay_dir, "patient_intake-0001")
+    (replay_dir / "arraylike.json").write_text("[1, 2, 3]", encoding="utf-8")
+    (replay_dir / "stringlike.json").write_text('"just a string"', encoding="utf-8")
+    r = auth_client.get("/api/library")
+    assert r.status_code == 200
+    assert {e["incident_id"] for e in r.json()["incidents"]} == {"patient_intake-0001"}
+
+
+# @spec REPLAY-LIB-004 — the library page is served to an authenticated user
+def test_library_page_served(auth_client, replay_dir):
+    r = auth_client.get("/library")
+    assert r.status_code == 200 and "library.js" in r.text
 
 
 # @spec DASH-SIM-001, DASH-SIM-002 — scripted timeline evolves and emits agent-attributed events

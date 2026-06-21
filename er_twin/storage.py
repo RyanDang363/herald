@@ -124,8 +124,12 @@ class RedisStore(StorageInterface):
 
     def set(self, key: str, value: dict) -> None:
         # @spec INTAKE-FLOW-002, INTAKE-STATE-001
+        # transaction=True wraps DEL+HSET+SADD in MULTI/EXEC so the server applies them atomically:
+        # a connection reset/timeout before EXEC discards the whole batch (key keeps its prior value)
+        # instead of leaving it deleted-but-not-recreated and dropped from its index. This was the
+        # root cause of beds/nurses silently vanishing when a network stall hit mid-seed.
         entity, eid = self._entity_and_id(key)
-        pipe = self._client.pipeline(transaction=False)
+        pipe = self._client.pipeline(transaction=True)
         pipe.delete(key)
         if value:
             pipe.hset(key, mapping=self._encode(value))
@@ -134,8 +138,9 @@ class RedisStore(StorageInterface):
 
     def update(self, key: str, partial: dict) -> None:
         # @spec INTAKE-FLOW-004, INTAKE-FLOW-006, INTAKE-FLOW-008
+        # transaction=True: HSET + index SADD commit atomically (see set() for the rationale).
         entity, eid = self._entity_and_id(key)
-        pipe = self._client.pipeline(transaction=False)
+        pipe = self._client.pipeline(transaction=True)
         if partial:
             pipe.hset(key, mapping=self._encode(partial))
         pipe.sadd(f"er:index:{entity}", eid)

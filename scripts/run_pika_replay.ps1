@@ -21,7 +21,10 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ClaudeCli = $env:CLAUDE_CLI
+    [string]$ClaudeCli = $env:CLAUDE_CLI,
+    # Optional: render a SPECIFIC incident's brief (out/{IncidentId}.json) instead of the most recent
+    # incident_replay_brief.json. The keyframes-fallback passes this so it renders the right incident.
+    [string]$IncidentId
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,6 +45,20 @@ $OutDir = Join-Path $RepoRoot 'out'
 $BriefPath = Join-Path $OutDir 'incident_replay_brief.json'
 $PromptPath = Join-Path $OutDir 'pika_prompt.md'
 $ResultPath = Join-Path $OutDir 'pika_result.json'
+
+# When a specific incident is requested, render its per-incident brief (out/{IncidentId}.json) rather
+# than the latest incident_replay_brief.json, and FORCE-regenerate the prompt from it (so we never reuse
+# a stale pika_prompt.md left by a different incident — build_pika_prompt writes the fixed prompt path).
+if ($IncidentId) {
+    $perIncident = Join-Path $OutDir "$IncidentId.json"
+    if (Test-Path $perIncident) {
+        $BriefPath = $perIncident
+        Write-Host "Rendering specific incident brief: $BriefPath" -ForegroundColor Cyan
+        & uv run python -m scripts.build_pika_prompt $BriefPath
+    } else {
+        Write-Warning "No per-incident brief at $perIncident; using the latest $BriefPath instead."
+    }
+}
 
 if (-not (Test-Path $BriefPath)) {
     Write-Error "Missing $BriefPath. Run an ER event first (Phase R writes the brief), then re-run."

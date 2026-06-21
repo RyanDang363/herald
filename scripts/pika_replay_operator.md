@@ -22,6 +22,9 @@ Contract reference: [LLD §9](../docs/llds/er-twin-core.lld.md) · file schema: 
 
 ## Alternative A — Automated (primary path)
 
+There are now **two** automated generators. Prefer the **data-driven keyframes clip** (A1); the
+**text-brief** generator (A2) is the documented fallback when no frames are available.
+
 1. **Smoke test** the CLI → Pika path and credit balance:
 
    ```pwsh
@@ -32,24 +35,57 @@ Contract reference: [LLD §9](../docs/llds/er-twin-core.lld.md) · file schema: 
    - **Passes** when `permission_denials` is `[]` and it prints the identity + balance.
    - **Fails (exit 1)** if any tool was denied — the message names the denials; widen the allowlist.
 
-2. **Generate the replay** from the latest brief:
+### A1 — Data-driven keyframes clip (preferred, LLD §9.1)
+
+Reconstructs the incident from **real captured ER state** instead of a hallucinated scene.
+
+1. **Run an ER event** so Phase 1 writes `out/replay/{incident}.json` (the snapshot timeline).
+2. **Capture the keyframe PNGs** (headless Chromium over the `/replay/{incident}` page):
 
    ```pwsh
-   pwsh scripts/run_pika_replay.ps1
+   uv run playwright install chromium   # once
+   uv run python -m scripts.capture_replay_frames patient_intake-0001
    ```
 
-   - Requires `out/incident_replay_brief.json`; regenerates `out/pika_prompt.md` if missing
-     (`uv run python -m scripts.build_pika_prompt`).
-   - Calls the CLI with `--mcp-config .mcp.json` and the explicit Pika allowlist
-     (`identity_whoami, identity_balance, estimate_cost, generate_image, generate_video,
-     generate_keyframes_video, add_captions, edit_text_overlay, task_status`).
-   - Writes raw CLI JSON to `out/pika_result.json`, fails loudly on non-empty `permission_denials`,
-     and prints the media **URL / asset ID / task_id**.
-   - Long renders return `{task_id, status}`; the CLI session polls `task_status` to completion.
+   Writes `out/frames/{incident}/frame_00.png` … (start → end). Keyframe selection is capped at Pika's
+   verified limit (`KEYFRAME_CAP = 2` → first + last).
 
-3. **Pre-generate before judging.** Run step 2 ahead of time and keep `out/pika_result.json` +
-   the media URL. Re-run live during the demo as proof-of-work; if the live render is slow or fails,
-   show the pre-generated asset.
+3. **Generate the clip:**
+
+   ```pwsh
+   pwsh scripts/run_pika_keyframes.ps1 patient_intake-0001   # omit the id to use the latest incident
+   ```
+
+   - Feeds the first + last frame to `generate_keyframes_video` (one start→end clip), with
+     `duration = clamp(real_elapsed / speed_factor → {5,10})` read from the incident JSON.
+   - Allowlist: `identity_whoami, identity_balance, estimate_cost, upload_asset, create_upload_return,
+     complete_upload_asset, generate_keyframes_video, task_status`.
+   - Writes raw CLI JSON to `out/pika_result.json`, fails loudly on non-empty `permission_denials`, and
+     **writes the returned media URL back into `out/replay/{incident}.json` as `video_url`** — which is
+     what the `/library` page embeds.
+   - If the frames are missing, it **falls back to A2** automatically (no crash).
+
+### A2 — Text-brief clip (fallback)
+
+```pwsh
+pwsh scripts/run_pika_replay.ps1
+```
+
+- Requires `out/incident_replay_brief.json`; regenerates `out/pika_prompt.md` if missing
+  (`uv run python -m scripts.build_pika_prompt`).
+- Calls the CLI with `--mcp-config .mcp.json` and the explicit Pika allowlist
+  (`identity_whoami, identity_balance, estimate_cost, generate_image, generate_video,
+  generate_keyframes_video, add_captions, edit_text_overlay, task_status`).
+- Writes raw CLI JSON to `out/pika_result.json`, fails loudly on non-empty `permission_denials`,
+  and prints the media **URL / asset ID / task_id**.
+- Long renders return `{task_id, status}`; the CLI session polls `task_status` to completion.
+
+### Pre-generate before judging
+
+Run A1 (or A2) ahead of time and keep `out/pika_result.json` + the media URL (A1 also writes
+`video_url` into `out/replay/{incident}.json`, which the `/library` page embeds). Re-run live during the
+demo as proof-of-work; if the live render is slow or fails, show the pre-generated asset or the
+in-browser `/replay/{incident}` page.
 
 ## Alternative B — Manual VSCode operator (fallback)
 

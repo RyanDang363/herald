@@ -13,6 +13,7 @@ Patient enumeration uses `StorageInterface.list_ids("patient")` (prefix index); 
 from uagents import Agent
 
 from er_twin.addresses import seed_for
+from er_twin.ehr import build_live_record, find_active_patient_by_mrn
 from er_twin.storage import StorageInterface
 
 ADMISSIONS_AGENT_ID = "admissions"
@@ -42,23 +43,37 @@ def _find_active_duplicate(store: StorageInterface, name: str, chief_complaint: 
 
 
 def intake(
-    store: StorageInterface, name: str, chief_complaint: str, vitals: dict
+    store: StorageInterface,
+    name: str,
+    chief_complaint: str,
+    vitals: dict,
+    mrn: str = "",
 ) -> tuple[str, dict, bool]:
-    """Create (or dedupe) a patient record. Returns ``(patient_id, record, created)``.
+    """Create (or dedupe) an EHR-enriched patient record. Returns ``(patient_id, record, created)``.
 
     @spec INTAKE-FLOW-002 — new patient: status `waiting`, persisted, id returned.
     @spec INTAKE-IDEM-001 — active duplicate (name + chief_complaint): existing id, no new record.
+    @spec EHR-FLOW-002 — before persisting, `build_live_record` resolves the MRN (minting one for an
+        unregistered walk-in) and folds the returning patient's history into the live hash. An MRN that
+        is already active in the ER dedupes to that patient (returning mid-visit), falling back to the
+        name + chief_complaint match when no MRN is supplied.
     """
+    # @spec EHR-FLOW-002 — MRN dedupe first (a returning chart already active in the ER)...
+    if mrn:
+        existing_by_mrn = find_active_patient_by_mrn(store, mrn)
+        if existing_by_mrn is not None:
+            return existing_by_mrn, store.get(patient_key(existing_by_mrn)), False
+    # @spec INTAKE-IDEM-001 — ...then the name + chief_complaint fallback (walk-in with no MRN).
     existing = _find_active_duplicate(store, name, chief_complaint)
     if existing is not None:
         return existing, store.get(patient_key(existing)), False
 
+    # @spec EHR-FLOW-002 — enrich from the master EHR (history + resolved/minted MRN) before persisting.
+    ehr = build_live_record(mrn, name, chief_complaint, vitals)
     patient_id = _next_patient_id(store)
     record = {
+        **ehr,  # mrn, name, chief_complaint, vitals, history, new_patient
         "id": patient_id,
-        "name": name,
-        "chief_complaint": chief_complaint,
-        "vitals": dict(vitals),
         "acuity": None,
         "specialty": None,
         "status": "waiting",

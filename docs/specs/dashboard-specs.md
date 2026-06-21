@@ -17,8 +17,8 @@ Spec ID format: `{FEATURE}-{TYPE}-{NNN}`. Feature: `DASH`. Types: `API`, `SYS`, 
 ## DASH — System / Data Source
 
 - [x] **DASH-SYS-001** — Where `dashboard_source` is `fixture`, the dashboard shall load `fixtures/er_state.json` into an in-memory store and serve snapshots from it.
-- [ ] **DASH-SYS-002** — Where `dashboard_source` is `redis`, the dashboard shall serve snapshots by reading entity records through the `StorageInterface` backed by Redis at `settings.redis_url`. *(get_store() path stubbed; awaits Dev 2 RedisStore)*
-- [ ] **DASH-SYS-003** — When the dashboard starts in `redis` mode, it shall subscribe to the `er:events` channel and append each received line to a ring buffer capped at N entries. *(buffer built; live pub/sub subscription not yet wired)*
+- [x] **DASH-SYS-002** — Where `dashboard_source` is `redis`, the dashboard shall serve snapshots by reading entity records through the `StorageInterface` backed by Redis at `settings.redis_url`. *(`get_store()` returns `RedisStore`; verified live — `snapshot()` reads the same Redis the agents write.)*
+- [x] **DASH-SYS-003** — Where `dashboard_source` is `redis`, the dashboard shall read the most recent `er:events` lines from the Redis Stream (XREVRANGE, capped at N) and map each into a `{ts, event, detail}` feed row. *(`current_events()` → `_redis_events()`; the Stream is what `RedisStore.publish` XADDs to, so polled reads replay history a pub/sub subscriber would miss. Verified live: 4 intake lines read back.)*
 - [x] **DASH-SYS-004** — The dashboard shall assemble snapshots only through `StorageInterface.list_ids` and `StorageInterface.get`, never through a concrete backend directly. *(ubiquitous)*
 
 ## DASH — UI

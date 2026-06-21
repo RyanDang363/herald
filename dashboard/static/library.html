@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ER Twin — Incident Library</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>AgentER — Incident Library</h1>
+    <div class="meta">
+      <span id="lib-count" class="updated">—</span>
+      <a class="logout" href="/">Live floor</a>
+      <a class="logout" href="/logout">Sign out</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel wide">
+      <div class="panel-topline">
+        <h2>This session's incidents</h2>
+        <p class="panel-note">Each incident is a data-grounded replay reconstructed from logged ER state. Play the Pika clip, or open the in-browser replay.</p>
+      </div>
+      <div id="library" class="library-grid"></div>
+    </section>
+  </main>
+
+  <script src="/static/library.js"></script>
+</body>
+</html>
