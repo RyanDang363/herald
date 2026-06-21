@@ -25,6 +25,7 @@ so this module stays wall-clock-free and the `er:events` line shape / `REPLAY-LO
 @spec REPLAY-KEY-001 @spec REPLAY-LIB-001 @spec REPLAY-LIB-002
 """
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -80,11 +81,12 @@ KEYFRAME_CAP = 2
 def _capture_entities(store: StorageInterface) -> dict[str, list[dict]]:
     """Deep-copy every `er:{entity}:{id}` record into the dashboard snapshot shape (REPLAY-SNAP-001).
 
-    `store.get` already returns a fresh dict per record, so the captured lists are independent of later
-    state mutations.
+    A snapshot is an immutable point-in-time capture, so we `deepcopy` each record: `store.get` only
+    returns a *shallow* copy, so a nested field (e.g. `vitals`) would otherwise share its object with the
+    live store and a later in-place mutation could bleed into an already-captured snapshot.
     """
     return {
-        plural: [store.get(f"er:{entity}:{eid}") for eid in store.list_ids(entity)]
+        plural: [copy.deepcopy(store.get(f"er:{entity}:{eid}")) for eid in store.list_ids(entity)]
         for entity, plural in SNAPSHOT_ENTITIES.items()
     }
 

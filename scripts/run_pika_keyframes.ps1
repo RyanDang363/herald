@@ -68,11 +68,13 @@ if (Test-Path $FramesDir) {
 }
 
 # Fallback (REPLAY-PIKA-002): no usable frames -> defer to the text-brief Pika path, do not crash.
+# Pass the resolved $IncidentId through so the fallback renders THIS incident's brief (out/{id}.json),
+# not whatever happens to be the most recent incident_replay_brief.json.
 if ($frames.Count -lt 2) {
     Write-Warning "Need >=2 keyframes in $FramesDir (found $($frames.Count)). Capture them with:"
     Write-Warning "  uv run python -m scripts.capture_replay_frames $IncidentId"
-    Write-Warning "Falling back to the text-brief Pika path (run_pika_replay.ps1)..."
-    & (Join-Path $PSScriptRoot 'run_pika_replay.ps1')
+    Write-Warning "Falling back to the text-brief Pika path (run_pika_replay.ps1) for $IncidentId..."
+    & (Join-Path $PSScriptRoot 'run_pika_replay.ps1') -IncidentId $IncidentId
     exit $LASTEXITCODE
 }
 
@@ -82,15 +84,14 @@ Write-Host "First frame: $firstFrame" -ForegroundColor DarkGray
 Write-Host "Last  frame: $lastFrame" -ForegroundColor DarkGray
 
 # Requested clip duration = clamp(real_elapsed / speed_factor) to Pika's {5,10} (REPLAY-LIB-002).
+# Routed through scripts.replay_meta (argv, not inline `python -c`) to dodge PS 5.1 quote-mangling and
+# keep the path off the Python source line. The parse takes the last bare-integer line so any
+# incidental stdout noise from `uv run` is ignored.
 $Duration = 5
 try {
-    $durRaw = & uv run python -c @"
-import json
-from er_twin import replay
-d = json.load(open(r'$ReplayJson', encoding='utf-8'))
-print(replay.requested_clip_duration(d.get('start_ts'), d.get('end_ts'), d.get('speed_factor', 10)))
-"@
-    if ($durRaw) { $Duration = [int]($durRaw.Trim()) }
+    $durRaw = & uv run python -m scripts.replay_meta duration $ReplayJson
+    $durLine = @($durRaw) | Where-Object { $_ -match '^\s*\d+\s*$' } | Select-Object -Last 1
+    if ($durLine) { $Duration = [int]($durLine.Trim()) }
 } catch {
     Write-Warning "Could not compute clip duration; defaulting to ${Duration}s."
 }
@@ -171,18 +172,14 @@ Write-Host "--- CLI result ---"
 Write-Host $result
 
 # Write the returned media URL back into out/replay/{incident}.json as video_url (REPLAY-LIB-003).
+# Via scripts.replay_meta set-video-url: the path and the URL are passed as argv — never interpolated
+# into Python source — so a single quote, backslash, or shell metachar in the model-extracted URL can
+# neither break the parse nor inject code.
 $urlMatch = [regex]::Match($result, 'https?://\S+')
 if ($urlMatch.Success) {
     $mediaUrl = $urlMatch.Value.TrimEnd('.,)`"''')
     Write-Host "Media URL: $mediaUrl" -ForegroundColor Green
-    & uv run python -c @"
-import json
-p = r'$ReplayJson'
-d = json.load(open(p, encoding='utf-8'))
-d['video_url'] = r'$mediaUrl'
-json.dump(d, open(p, 'w', encoding='utf-8'), indent=2)
-print('video_url written into', p)
-"@
+    & uv run python -m scripts.replay_meta set-video-url $ReplayJson $mediaUrl
 } else {
     $taskMatch = [regex]::Match($result, '(?i)task[_ ]?id\W+([A-Za-z0-9._-]+)')
     if ($taskMatch.Success) {

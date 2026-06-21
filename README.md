@@ -8,6 +8,8 @@ Fetch.ai uAgents + Bureau · ASI:One · in-memory/Redis state · Pika MCP replay
 
 **One-liner:** *Fetch.ai coordinates the ER response; ASI:One exposes the public chat interface; StorageInterface/Redis records the event trace; Claude Code CLI invokes Pika MCP to turn that trace into replay media.*
 
+> **Connecting as a teammate or judge?** See [`AGENT.md`](AGENT.md) for how to reach the canonical ER Twin Orchestrator on ASI:One / Agentverse — and why you should **not** re-register your own copy.
+
 ---
 
 ## Feasibility Verdict

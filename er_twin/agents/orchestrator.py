@@ -23,6 +23,7 @@ serialized one-at-a-time (ORCH-SYS-003).
 """
 
 import asyncio
+import logging
 import re
 import time
 from collections import deque
@@ -57,6 +58,9 @@ from er_twin.protocols import (
 from er_twin.storage import StorageInterface
 
 ORCHESTRATOR_AGENT_ID = "orchestrator"
+
+# Module logger for best-effort paths that have no `ctx` in scope (e.g. `_log_milestone`).
+_logger = logging.getLogger(__name__)
 
 # --- Intent resolution (USE_MOCK hardcoded lookup, ORCH-LLM-003) ---
 
@@ -607,11 +611,20 @@ class OxygenFlow:
 # --- Agent + chat protocol wiring ---
 
 orchestrator = Agent(
-    name="er-orchestrator",
+    name="ER Twin Orchestrator",
+    # seed is UNCHANGED — the address + already-connected Agentverse mailbox are derived from it and
+    # must stay stable. handle/name/description below are profile metadata only (independent of the seed).
     seed=seed_for(ORCHESTRATOR_AGENT_ID),
     mailbox=True,
     publish_agent_details=True,
     network="testnet",
+    handle="ERTwin",  # public @handle on Agentverse/ASI:One (max 20 chars); falls back if already taken
+    description=(
+        "Autonomous digital twin of a hospital emergency room, built on Fetch.ai uAgents. "
+        "Chat to drive it: \"A new patient arrived with chest pain\", "
+        "\"Bed 3's patient oxygen is dropping\", or \"Show me what's happening in the ER\". "
+        "Synthetic demo data only — no real patient health information."
+    ),
 )
 
 _session_senders = SessionSenders()
@@ -680,16 +693,39 @@ def _recall_memory(query: str) -> list[str]:
 def _log_milestone(
     store: StorageInterface, event: str, actor: str, action: str,
     target: str | None = None, **detail,
-) -> dict:
-    """Publish a milestone line AND capture a full-state snapshot of the store at that instant.
+) -> dict | None:
+    """Publish a milestone line AND capture a full-state snapshot of the store — best-effort.
 
     @spec REPLAY-LOG-001 — the `er:events` line (unchanged shape) is published by `ReplayRecorder.log`.
     @spec REPLAY-SNAP-001 — the same call captures every entity record + a real wall-clock `ts`
     (`time.time()`, injected here so `replay.py` stays wall-clock-free) into the seq-keyed timeline used
     by the replay page / library. The published line carries no `ts` (REPLAY-LOG-002 untouched).
+
+    The replay layer is **additive observation**, so — like `_emit_replay`/`_record_memory` — a transient
+    backend fault (e.g. a `RedisStore` publish/read timeout) must NEVER abort the live command. On
+    failure it logs and returns ``None``; the caller records no replay line for that milestone and the
+    ER flow proceeds (and, for oxygen, still reaches `_finish_oxygen` after the swap).
     """
-    line = _replay.log(store, event, actor, action, target, **detail)
-    _replay.snapshot(store, line["seq"], time.time(), action=action, actor=actor, target=target)
+    try:
+        line = _replay.log(store, event, actor, action, target, **detail)
+    except Exception:  # noqa: BLE001 — replay capture is non-critical; never crash the live command.
+        _logger.exception("replay milestone log failed (%s/%s)", event, action)
+        return None
+    try:
+        _replay.snapshot(store, line["seq"], time.time(), action=action, actor=actor, target=target)
+    except Exception:  # noqa: BLE001 — snapshot capture is best-effort observation.
+        _logger.exception("replay snapshot failed (%s/%s)", event, action)
+    return line
+
+
+def _record_milestone(
+    buf: list[dict], store: StorageInterface, event: str, actor: str, action: str,
+    target: str | None = None, **detail,
+) -> dict | None:
+    """`_log_milestone` then append to `buf` only when a line was produced (skips a best-effort miss)."""
+    line = _log_milestone(store, event, actor, action, target, **detail)
+    if line is not None:
+        buf.append(line)
     return line
 
 
@@ -841,9 +877,7 @@ async def _dispatch_command(ctx: Context, cmd: PendingChatCommand, flow_id: str)
         lines: list[dict] = []
 
         def _capture_intake(action: str, target: str | None, detail: dict) -> None:
-            lines.append(
-                _log_milestone(_store, "intake", replay.actor_for(action), action, target, **detail)
-            )
+            _record_milestone(lines, _store, "intake", replay.actor_for(action), action, target, **detail)
 
         outcome = run_intake(
             _store, data["name"], data["chief_complaint"], data["vitals"], mrn,
@@ -874,9 +908,7 @@ async def _dispatch_command(ctx: Context, cmd: PendingChatCommand, flow_id: str)
         )
         oxygen_flows[flow_id] = flow
         # @spec REPLAY-LOG-001 — first oxygen milestone; the rest accrue across the async handlers.
-        flow.lines.append(
-            _log_milestone(_store, "oxygen", "orchestrator", "oxygen_drop_simulated", eid, bed=bed_id)
-        )
+        _record_milestone(flow.lines, _store, "oxygen", "orchestrator", "oxygen_drop_simulated", eid, bed=bed_id)
         await ctx.send(
             address_for(eid),
             SimulateOxygenDropRequest(flow_id=flow_id, bed_id=bed_id, equipment_id=eid),
@@ -901,7 +933,7 @@ async def _dispatch_command(ctx: Context, cmd: PendingChatCommand, flow_id: str)
         summary = compose_summary(_store, alert_beds, recalled)
         # @spec REPLAY-LOG-001 — one `summary_generated` milestone, then export the brief.
         line = _log_milestone(_store, "summary", "orchestrator", "summary_generated", None, text=summary)
-        incident_id = _emit_replay(ctx, "summary", [line])
+        incident_id = _emit_replay(ctx, "summary", [line] if line is not None else [])
         # @spec MEM-FLOW-001 — record the generated summary as a session event (non-fatal).
         _record_memory(ctx, summary)
         await _send_chat(ctx, cmd.sender, summary + _replay_note(incident_id))
@@ -980,7 +1012,7 @@ async def _finish_oxygen(ctx: Context, flow_id: str, reply: str) -> None:
     if flow is not None and _store is not None:
         # @spec REPLAY-LOG-001 — terminal success milestone, then export the incident's brief.
         if flow.status == "done":
-            flow.lines.append(_log_milestone(_store, "oxygen", "orchestrator", "oxygen_event_complete", flow.bed_id))
+            _record_milestone(flow.lines, _store, "oxygen", "orchestrator", "oxygen_event_complete", flow.bed_id)
         incident_id = _emit_replay(ctx, "oxygen", flow.lines)
     # @spec MEM-FLOW-001 — record the oxygen-event outcome to agent memory (non-fatal).
     _record_memory(ctx, reply)
@@ -1016,16 +1048,14 @@ async def on_low_supply(ctx: Context, sender: str, msg: LowSupplyAlert):
     flow.status = "locating"
     ctx.logger.info(f"alert_raised: {eid} low ({msg.supply_level}%) at {flow.bed_id} -> locating (flow={flow.flow_id})")
     # @spec REPLAY-LOG-001 — autonomous alert milestone.
-    flow.lines.append(
-        _log_milestone(_store, "oxygen", "equipment", "alert_raised", eid, supply_level=msg.supply_level, bed=flow.bed_id)
-    )
+    _record_milestone(flow.lines, _store, "oxygen", "equipment", "alert_raised", eid, supply_level=msg.supply_level, bed=flow.bed_id)
 
     # @spec OXY-FLOW-002 — select a same-type replacement (decision R2-E sort).
     replacement = equipment.locate_replacement(_store, msg.type, exclude_id=eid)
     flow.replacement_id = replacement
     if replacement is None:
         # @spec OXY-ERR-001 — no qualifying unit: report and do not dispatch anything.
-        flow.lines.append(_log_milestone(_store, "oxygen", "equipment", "no_replacement_unit_available", eid, bed=flow.bed_id))
+        _record_milestone(flow.lines, _store, "oxygen", "equipment", "no_replacement_unit_available", eid, bed=flow.bed_id)
         await _finish_oxygen(ctx, flow.flow_id, f"Low O2 on {display(flow.bed_id)}: no available replacement unit nearby.")
         return
     await ctx.send(
@@ -1049,14 +1079,12 @@ async def on_locate(ctx: Context, sender: str, msg: EquipmentLocateResponse):
     flow.status = "dispatching"
     ctx.logger.info(f"unit_located: {msg.equipment_id} at {msg.location} -> dispatching nurse (flow={flow.flow_id})")
     # @spec REPLAY-LOG-001 — replacement located.
-    flow.lines.append(
-        _log_milestone(_store, "oxygen", "equipment", "unit_located", msg.equipment_id, location=msg.location, bed=flow.bed_id)
-    )
+    _record_milestone(flow.lines, _store, "oxygen", "equipment", "unit_located", msg.equipment_id, location=msg.location, bed=flow.bed_id)
 
     # @spec OXY-FLOW-004 — dispatch an available nurse to bring the unit.
     nurse_id = nurse.find_available_nurse(_store)
     if nurse_id is None:
-        flow.lines.append(_log_milestone(_store, "oxygen", "nurse", "no_dispatch_nurse_available", flow.bed_id))
+        _record_milestone(flow.lines, _store, "oxygen", "nurse", "no_dispatch_nurse_available", flow.bed_id)
         await _finish_oxygen(
             ctx, flow.flow_id,
             f"Replacement {display(msg.equipment_id)} located for {display(flow.bed_id)}, "
@@ -1082,19 +1110,15 @@ async def on_dispatch(ctx: Context, sender: str, msg: StaffDispatchResponse):
         return
     nurse_id = flow.nurse_id or msg.staff_id
     if not msg.accepted:
-        flow.lines.append(_log_milestone(_store, "oxygen", "nurse", "no_dispatch_nurse_available", flow.bed_id, nurse=nurse_id))
+        _record_milestone(flow.lines, _store, "oxygen", "nurse", "no_dispatch_nurse_available", flow.bed_id, nurse=nurse_id)
         await _finish_oxygen(ctx, flow.flow_id, f"{display(nurse_id)} declined the oxygen dispatch for {display(flow.bed_id)}.")
         return
     flow.status = "done"  # mark before mutating so a duplicate response is a no-op
     # @spec REPLAY-LOG-001 — nurse accepts, then the cross-entity swap completes.
-    flow.lines.append(
-        _log_milestone(_store, "oxygen", "nurse", "nurse_dispatched", nurse_id, bed=flow.bed_id, equipment=flow.replacement_id)
-    )
+    _record_milestone(flow.lines, _store, "oxygen", "nurse", "nurse_dispatched", nurse_id, bed=flow.bed_id, equipment=flow.replacement_id)
     apply_oxygen_swap(_store, flow.alert_equipment_id, flow.replacement_id, flow.bed_id, nurse_id)
-    flow.lines.append(
-        _log_milestone(_store, "oxygen", "orchestrator", "oxygen_swap_complete", flow.bed_id,
-                    depleted=flow.alert_equipment_id, replacement=flow.replacement_id, nurse=nurse_id)
-    )
+    _record_milestone(flow.lines, _store, "oxygen", "orchestrator", "oxygen_swap_complete", flow.bed_id,
+                      depleted=flow.alert_equipment_id, replacement=flow.replacement_id, nurse=nurse_id)
     ctx.logger.info(
         f"oxygen_swap_complete: {flow.alert_equipment_id}->{flow.replacement_id} at {flow.bed_id} "
         f"via {nurse_id} (flow={flow.flow_id})"

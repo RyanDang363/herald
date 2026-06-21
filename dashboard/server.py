@@ -183,11 +183,17 @@ def replay_page(incident_id: str) -> FileResponse:
 
 @app.get("/api/replay/{incident_id}")
 def api_replay(incident_id: str) -> JSONResponse:
-    """Return the incident's snapshot timeline from `out/replay/{incident}.json` (404 if missing)."""
+    """Return the incident's snapshot timeline from `out/replay/{incident}.json` (404 if missing).
+
+    A half-written / corrupt file must not 500 — degrade to 404 like the sibling `/api/library` skip.
+    """
     path = _replay_file(incident_id)
     if path is None:
         raise HTTPException(status_code=404, detail="incident replay not found")
-    return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+    try:
+        return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(status_code=404, detail="incident replay unavailable") from exc
 
 
 def _library_entry(record: dict, fallback_id: str) -> dict:
@@ -226,6 +232,8 @@ def api_library(user: str = Depends(require_api)) -> JSONResponse:
                 record = json.loads(path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 continue  # a half-written / corrupt file must not break the whole library
+            if not isinstance(record, dict):
+                continue  # valid JSON but not an incident object (e.g. a bare list) — skip, don't 500
             entries.append(_library_entry(record, path.stem))
     return JSONResponse({"incidents": entries})
 

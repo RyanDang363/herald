@@ -230,6 +230,21 @@ def test_snapshot_is_independent_of_later_mutation():
     assert rec.timeline[0]["entities"]["patients"][0]["status"] == "waiting"
 
 
+def test_snapshot_deep_copies_nested_fields():
+    # @spec REPLAY-SNAP-001 — a snapshot is an immutable point-in-time capture: even an in-place mutation
+    # of a nested field in the live store must NOT bleed into an already-captured snapshot.
+    store = InMemoryStore()
+    store.set("er:patient:p1", {"id": "p1", "vitals": {"spo2": 97}, "care_team": ["nurse1"]})
+    rec = replay.ReplayRecorder()
+    rec.snapshot(store, seq=0, ts=1.0, action="record_created", actor="admissions", target="p1")
+    # Mutate the live record's nested objects IN PLACE (not via store.update replacement).
+    store._data["er:patient:p1"]["vitals"]["spo2"] = 50
+    store._data["er:patient:p1"]["care_team"].append("doc1")
+    captured = rec.timeline[0]["entities"]["patients"][0]
+    assert captured["vitals"]["spo2"] == 97
+    assert captured["care_team"] == ["nurse1"]
+
+
 def test_snapshot_idempotent_overwrite_by_seq():
     # @spec REPLAY-SNAP-002 — re-capturing the same seq overwrites, never duplicates.
     store = _snapshot_store()
@@ -264,6 +279,34 @@ def test_log_line_shape_unchanged_by_snapshot_wiring():
     published = _published(store)[-1]
     assert set(published) == {"seq", "event", "actor", "action", "target", "detail"}
     assert "ts" not in published and "timestamp" not in published and "time" not in published
+
+
+class _PublishBoom(InMemoryStore):
+    def publish(self, channel: str, msg: str) -> None:
+        raise RuntimeError("redis publish down")
+
+
+class _ReadBoom(InMemoryStore):
+    def list_ids(self, entity: str) -> list[str]:
+        raise RuntimeError("redis read down")
+
+
+def test_log_milestone_is_best_effort_on_backend_fault():
+    # @spec REPLAY-SNAP-001 (best-effort) — replay capture is additive observation, so a transient
+    # backend fault (RedisStore publish/read timeout) must NEVER raise out of the milestone path and
+    # abort the live ER command. A publish fault -> no line, nothing appended; a snapshot-read fault ->
+    # the line still returns (event feed succeeded), the snapshot is just skipped.
+    from er_twin.agents import orchestrator
+
+    orchestrator._replay = replay.ReplayRecorder()
+    buf: list[dict] = []
+    line = orchestrator._record_milestone(buf, _PublishBoom(), "intake", "admissions", "record_created", "p1")
+    assert line is None and buf == []  # publish failed -> skipped, no exception
+
+    orchestrator._replay = replay.ReplayRecorder()
+    line2 = orchestrator._log_milestone(_ReadBoom(), "intake", "admissions", "record_created", "p1")
+    assert line2 is not None and line2["action"] == "record_created"  # feed line still produced
+    assert orchestrator._replay.timeline == []  # snapshot capture skipped on the read fault
 
 
 def _intake_snapshots() -> list[dict]:

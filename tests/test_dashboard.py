@@ -267,6 +267,12 @@ def test_api_replay_missing_incident_404(replay_dir):
     assert new_client().get("/api/replay/does-not-exist").status_code == 404
 
 
+# @spec REPLAY-FRAME-002 — a corrupt/half-written incident file degrades to 404, never a 500
+def test_api_replay_corrupt_file_404(replay_dir):
+    (replay_dir / "patient_intake-0001.json").write_text("{not valid json", encoding="utf-8")
+    assert new_client().get("/api/replay/patient_intake-0001").status_code == 404
+
+
 # @spec REPLAY-FRAME-002 — replay endpoints need no auth (public synthetic replay; capturer/judges open it)
 def test_api_replay_public(replay_dir):
     _write_incident(replay_dir)
@@ -328,6 +334,16 @@ def test_api_library_skips_corrupt_file(auth_client, replay_dir):
     (replay_dir / "broken.json").write_text("{not json", encoding="utf-8")
     ids = {e["incident_id"] for e in auth_client.get("/api/library").json()["incidents"]}
     assert ids == {"patient_intake-0001"}
+
+
+# Valid JSON that is NOT an object (e.g. a bare list) is skipped, not a 500 (record.get would AttributeError).
+def test_api_library_skips_non_dict_json(auth_client, replay_dir):
+    _write_incident(replay_dir, "patient_intake-0001")
+    (replay_dir / "arraylike.json").write_text("[1, 2, 3]", encoding="utf-8")
+    (replay_dir / "stringlike.json").write_text('"just a string"', encoding="utf-8")
+    r = auth_client.get("/api/library")
+    assert r.status_code == 200
+    assert {e["incident_id"] for e in r.json()["incidents"]} == {"patient_intake-0001"}
 
 
 # @spec REPLAY-LIB-004 — the library page is served to an authenticated user
