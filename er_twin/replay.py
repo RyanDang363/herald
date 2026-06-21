@@ -13,8 +13,16 @@ from those lines after an event completes:
 Everything here is pure logic + file IO over a `StorageInterface` snapshot — no uAgents, no Pika
 client, no wall-clock (ordering comes from the monotonic `seq`), so it is fully unit-testable.
 
+**Data-driven replay (LLD §9.1).** On top of the narrative brief, the recorder also captures a
+full-state snapshot per milestone into an in-process, seq-keyed timeline; `export_incident_timeline`
+writes it (with per-snapshot `ts` + library metadata) to `out/replay/{incident}.json` for the replay
+page, the keyframe capturer, and the `/library`. `ts` is **injected** by the caller (the Orchestrator),
+so this module stays wall-clock-free and the `er:events` line shape / `REPLAY-LOG-002` are untouched.
+
 @spec REPLAY-LOG-001 @spec REPLAY-LOG-002 @spec REPLAY-BRIEF-001 @spec REPLAY-BRIEF-002
 @spec REPLAY-BRIEF-003 @spec REPLAY-BRIEF-004
+@spec REPLAY-SNAP-001 @spec REPLAY-SNAP-002 @spec REPLAY-SNAP-003
+@spec REPLAY-KEY-001 @spec REPLAY-LIB-001 @spec REPLAY-LIB-002
 """
 
 import json
@@ -46,6 +54,39 @@ PIKA_OUTPUTS_REQUESTED: list[str] = [
     "captioned timeline",
     "voiceover summary",
 ]
+
+# --- Data-driven replay (LLD §9.1) ---
+
+# Subdirectories under the out/ dir (LLD §9.1): the snapshot timeline + the captured keyframe PNGs.
+REPLAY_SUBDIR = "replay"
+FRAMES_SUBDIR = "frames"
+
+# Entity type -> snapshot plural key. Matches the dashboard `snapshot()` shape so the replay page can
+# feed each snapshot's `entities` straight into the shared floor-positioning code (REPLAY-FRAME-001).
+SNAPSHOT_ENTITIES: dict[str, str] = {
+    "patient": "patients", "bed": "beds", "nurse": "nurses",
+    "doctor": "doctors", "equipment": "equipment",
+}
+
+# Default time compression for the replay clip (decision: 10× — 10 real seconds ≈ 1 video second).
+DEFAULT_SPEED_FACTOR = 10
+# `generate_keyframes_video` accepts duration ∈ {5, 10} only (verified against the Pika MCP schema).
+PIKA_CLIP_DURATIONS: tuple[int, int] = (5, 10)
+# `generate_keyframes_video` interpolates between exactly two images (first_frame + last_frame), so the
+# verified keyframe cap is 2 and selection degrades to start → end (REPLAY-KEY-001).
+KEYFRAME_CAP = 2
+
+
+def _capture_entities(store: StorageInterface) -> dict[str, list[dict]]:
+    """Deep-copy every `er:{entity}:{id}` record into the dashboard snapshot shape (REPLAY-SNAP-001).
+
+    `store.get` already returns a fresh dict per record, so the captured lists are independent of later
+    state mutations.
+    """
+    return {
+        plural: [store.get(f"er:{entity}:{eid}") for eid in store.list_ids(entity)]
+        for entity, plural in SNAPSHOT_ENTITIES.items()
+    }
 
 # Milestone action -> the agent that owns it, for the timeline `actor` field (cosmetic; LLD §9 examples).
 _ACTOR_BY_ACTION: dict[str, str] = {
@@ -80,10 +121,44 @@ class ReplayRecorder:
     def __init__(self) -> None:
         self._seq = 0
         self._incident_counters: dict[str, int] = {t: 0 for t in INCIDENT_TYPES.values()}
+        # Full-state snapshot timeline, keyed by `seq` so a re-capture overwrites (REPLAY-SNAP-002).
+        self._timeline: dict[int, dict] = {}
 
     @property
     def seq(self) -> int:
         return self._seq
+
+    def snapshot(
+        self,
+        store: StorageInterface,
+        seq: int,
+        ts: float,
+        action: str = "",
+        actor: str = "",
+        target: str | None = None,
+    ) -> dict:
+        """Capture a full-state snapshot for `seq` and return it (LLD §9.1).
+
+        @spec REPLAY-SNAP-001 — every entity record + a real wall-clock `ts` (injected by the caller,
+        so this module stays wall-clock-free; the `er:events` line shape / REPLAY-LOG-002 are untouched).
+        @spec REPLAY-SNAP-002 — keyed by `seq`, so re-capturing the same `seq` overwrites (idempotent).
+        """
+        record = {
+            "seq": seq, "ts": ts, "action": action, "actor": actor,
+            "target": target, "entities": _capture_entities(store),
+        }
+        self._timeline[seq] = record
+        return record
+
+    @property
+    def timeline(self) -> list[dict]:
+        """The captured snapshots, ordered by `seq`."""
+        return [self._timeline[s] for s in sorted(self._timeline)]
+
+    def snapshots_for(self, seqs) -> list[dict]:
+        """The captured snapshots whose `seq` is in `seqs`, ordered by `seq` (per-incident slice)."""
+        wanted = set(seqs)
+        return [self._timeline[s] for s in sorted(self._timeline) if s in wanted]
 
     def log(
         self,
@@ -315,3 +390,118 @@ def export_incident(
     brief = build_brief(lines, incident_id, incident_type, store)
     write_incident(brief, out_dir=out_dir)
     return brief
+
+
+# --- Data-driven replay: snapshot timeline export + keyframe selection (LLD §9.1) ---
+
+
+def requested_clip_duration(
+    start_ts: float | None, end_ts: float | None, speed_factor: int = DEFAULT_SPEED_FACTOR
+) -> int:
+    """Real elapsed time compressed by `speed_factor`, snapped to Pika's allowed {5, 10} seconds.
+
+    @spec REPLAY-LIB-002 — requested clip duration ≈ `real_elapsed / speed_factor`, clamped to the
+    `generate_keyframes_video` duration enum so frame-space isn't wasted on a too-long clip.
+    """
+    lo, hi = PIKA_CLIP_DURATIONS
+    if start_ts is None or end_ts is None or speed_factor <= 0:
+        return lo
+    raw = max(0.0, end_ts - start_ts) / speed_factor
+    if raw <= lo:
+        return lo
+    if raw >= hi:
+        return hi
+    return lo if (raw - lo) <= (hi - raw) else hi
+
+
+def select_keyframes(snapshots: list[dict], cap: int = KEYFRAME_CAP) -> list[dict]:
+    """Pick the state-change snapshots, capped, degrading to evenly-spaced frames incl. first + last.
+
+    @spec REPLAY-KEY-001 — keep snapshots where entity state actually changed (always the first), then
+    cap at Pika's verified keyframe limit (`KEYFRAME_CAP = 2` → start → end). Pure: unit-testable
+    without a browser.
+    """
+    ordered = sorted(snapshots, key=lambda s: s["seq"])
+    if not ordered:
+        return []
+    changed = [ordered[0]]
+    for snap in ordered[1:]:
+        if snap.get("entities") != changed[-1].get("entities"):
+            changed.append(snap)
+    if cap <= 0 or len(changed) <= cap:
+        return changed
+    if cap == 1:
+        return [changed[-1]]
+    last = len(changed) - 1
+    idxs = sorted({round(i * last / (cap - 1)) for i in range(cap)})
+    return [changed[i] for i in idxs]
+
+
+def _distinct_involved(snapshots: list[dict], display=lambda x: x) -> list[str]:
+    """Distinct timeline actors + targets (order-preserving), mapped through `display` (REPLAY-LIB-001)."""
+    seen: list[str] = []
+    for snap in snapshots:
+        for key in (snap.get("actor"), snap.get("target")):
+            if not key:
+                continue
+            name = display(key)
+            if name and name not in seen:
+                seen.append(name)
+    return seen
+
+
+def build_incident_timeline(
+    snapshots: list[dict],
+    incident_id: str,
+    incident_type: str,
+    title: str,
+    summary: str,
+    speed_factor: int = DEFAULT_SPEED_FACTOR,
+    display=lambda x: x,
+) -> dict:
+    """Build the `out/replay/{incident}.json` record from captured snapshots + library metadata.
+
+    @spec REPLAY-LIB-001 — title/summary/incident_type, start/end `ts` (first/last snapshot), and
+    `involved[]` (distinct actors+targets via `display`/DISPLAY_NAMES). `video_url` starts null and is
+    filled in by the Phase-4 Pika step (REPLAY-LIB-003).
+    """
+    ordered = sorted(snapshots, key=lambda s: s["seq"])
+    return {
+        "incident_id": incident_id,
+        "incident_type": incident_type,
+        "title": title,
+        "summary": summary,
+        "speed_factor": speed_factor,
+        "start_ts": ordered[0]["ts"] if ordered else None,
+        "end_ts": ordered[-1]["ts"] if ordered else None,
+        "involved": _distinct_involved(ordered, display),
+        "video_url": None,
+        "snapshots": ordered,
+    }
+
+
+def export_incident_timeline(
+    snapshots: list[dict],
+    incident_id: str,
+    incident_type: str,
+    title: str,
+    summary: str,
+    speed_factor: int = DEFAULT_SPEED_FACTOR,
+    display=lambda x: x,
+    out_dir: str = "out",
+) -> dict | None:
+    """Write the snapshot timeline to `out/replay/{incident}.json`; return the record (or None).
+
+    @spec REPLAY-SNAP-003 — if no milestones were captured (no snapshots), write nothing and return
+    None (mirrors REPLAY-BRIEF-003 — no empty artifacts).
+    """
+    if not snapshots:
+        return None
+    record = build_incident_timeline(
+        snapshots, incident_id, incident_type, title, summary,
+        speed_factor=speed_factor, display=display,
+    )
+    replay_dir = Path(out_dir) / REPLAY_SUBDIR
+    replay_dir.mkdir(parents=True, exist_ok=True)
+    (replay_dir / f"{incident_id}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return record

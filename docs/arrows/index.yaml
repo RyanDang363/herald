@@ -1,5 +1,6 @@
 schema_version: 1
-last_updated: 2026-06-20  # Integration merge (core + redis-layer + dashboard). Core agent arrows OK (Phases 1-R); redis-store OK, agent-memory/patient-ehr PARTIAL (infra built, Orchestrator/Admissions wiring pending); dashboard PARTIAL (UI on fixture, live Redis/event wiring pending). Dropped redis's `core-agents` and dashboard's `er-twin-core` placeholders — the core is real (the 6 OK arrows below).
+last_updated: 2026-06-21  # Integration wiring landed (evan/wire-memory-ehr-dashboard). agent-memory, patient-ehr, dashboard moved PARTIAL -> OK: Orchestrator now records/recalls via Iris (MEM-FLOW-001/002), Admissions enriches intake from the EHR (EHR-FLOW-001/002), dashboard reads live Redis snapshots + er:events stream (DASH-SYS-002/003). main.py uses make_store()/make_memory(). Verified live against Redis Cloud + Iris. hld_sha reconciled to 8e87478 (integrated-tree README). All 11 arrows now OK.
+                          # 2026-06-21 (later): data-driven replay layer landed under incident-replay (LLD §9.1) — snapshot timeline -> out/replay/{incident}.json, /replay page (shared floor.js), keyframe capture (Playwright) -> Pika generate_keyframes_video, gated /library. 14 new REPLAY-SNAP/FRAME/KEY/PIKA/LIB specs [x]; 180 tests green. incident-replay stays OK; its hld_sha bumped to 772888f (README gained the §9.1 subsection). The other arrows keep hld_sha 8e87478 — the README delta is the additive replay subsection only, so it doesn't touch their domains; they'll reconcile the SHA on their next audit.
 # Event-flow mechanics for the ER arrows are pinned in:
 #   docs/decisions/2026-06-20-event-flow-decisions.md        (Round 1: Gaps 1-9)
 #   docs/decisions/2026-06-20-round-2-event-mechanics.md     (Round 2: staff/oxygen/summary/replay)
@@ -73,74 +74,73 @@ arrows:
     next: "Done for the demo — 4/4 SUMM-* specs [x] (read-only, synchronous, store-derived template per R2-F; pure build_status_summary + thin chat branch). OPTIONAL: real ASI:One synthesis alongside ORCH-LLM-001; agent-memory recall (MEM-FLOW-002) before the summary LLM call. summary_generated replay milestone is Phase R."
     drift: null
 
-  incident-replay:             # REPLAY-* — Phase R (event log -> out/incident_replay_brief.json + pika_prompt.md)
+  incident-replay:             # REPLAY-* — Phase R (brief) + data-driven replay (snapshot timeline -> replay page -> keyframes -> Pika clip -> library)
     status: OK
-    sampled: 2026-06-20
-    audited: 2026-06-20
+    sampled: 2026-06-21
+    audited: 2026-06-21
     upstream_at_audit:
-      hld_sha: 8e87478
+      hld_sha: 772888f          # README gained the data-driven replay (LLD §9.1) subsection this landing
     blocks: []
     blockedby: [patient-intake, low-oxygen-alert]
     detail: incident-replay.md
-    next: "Done for the demo — 6/6 REPLAY-* specs [x] (ReplayRecorder er:events milestone log; replay.py brief+prompt export, R2-G/R2-H/Gap-9; intake chain verified on disk). NEXT PHASE (P, not this arrow): scripts/run_pika_*.ps1 — Claude Code CLI -> Pika MCP from out/incident_replay_brief.json."
+    next: "Done: 6/6 REPLAY-LOG/BRIEF + 14 data-driven REPLAY-SNAP/FRAME/KEY/PIKA/LIB specs [x]. Snapshot timeline -> out/replay/{incident}.json (per-milestone ts, intake captured live via on_milestone); /replay page reuses dashboard floor.js (ts-paced tween); capture_replay_frames.py (Playwright) verified (PNGs written); run_pika_keyframes.ps1 single start->end clip + video_url writeback (script built, parse-checked); gated /library lists incidents w/ video or /replay fallback. 180 tests green + ruff clean; replay+library screenshotted. REPLAY-LOG-002 + er:events line shape UNCHANGED (guard test). Independent of DASH-SYS-002 (file boundary). ONLY unrun step = the live Pika render (operator pre-flight, spends credits) — same external boundary as Phase P."
     drift: null
 
-  # --- Redis-layer arrows (Phases 6-8, dev: redis). Infra is built and audited; integration into the
-  #     now-merged Orchestrator/Admissions is the remaining PARTIAL work (see each `next`). ---
+  # --- Redis-layer arrows (Phases 6-8, dev: redis). Infra built AND integrated into the merged
+  #     Orchestrator/Admissions/main.py as of 2026-06-21 (evan/wire-memory-ehr-dashboard). ---
 
   redis-store:                 # RedisStore (hashes + index sets + Streams), make_store() factory — Phase 6
     status: OK
-    sampled: 2026-06-20
-    audited: 2026-06-20
+    sampled: 2026-06-21
+    audited: 2026-06-21
     upstream_at_audit:
-      hld_sha: 8513c74          # audited on the redis-layer branch (pre-integration); reconcile on next sweep
+      hld_sha: 8e87478          # reconciled to the integrated-tree README (was 8513c74 pre-integration)
     blocks: [agent-memory, patient-ehr, dashboard]
     blockedby: []
     detail: redis-store.md
-    next: null
+    next: "main.py now selects RedisStore via make_store() under USE_MOCK=false; verified live (set/get/index/stream round-trip + EHR-enriched intake persisted)."
     drift: null
 
   agent-memory:                # MEM-* — Iris Agent Memory (IrisMemory / NoopMemory / make_memory) — Phase 7
-    status: PARTIAL
-    sampled: 2026-06-20
-    audited: 2026-06-20
+    status: OK
+    sampled: 2026-06-21
+    audited: 2026-06-21
     upstream_at_audit:
-      hld_sha: 8513c74
+      hld_sha: 8e87478          # reconciled to the integrated-tree README (was 8513c74 pre-integration)
     blocks: []
     blockedby: [redis-store]
     detail: agent-memory.md
-    next: "INTEGRATION (now unblocked — Orchestrator exists): Orchestrator must call memory.record_event() after each ER event (MEM-FLOW-001) and memory.recall() before the summary LLM call (MEM-FLOW-002)."
+    next: "INTEGRATED: Orchestrator calls _record_memory after each ER event (MEM-FLOW-001) and _recall_memory/compose_summary before the summary (MEM-FLOW-002), non-fatal. Verified live (Iris POST 201). NEXT (with ORCH-LLM-001): feed recalled facts into a real ASI:One summary prompt."
     drift: null
 
   patient-ehr:                 # EHR-* — master EHR + intake loader (er_twin/ehr.py, fixture) — Phase 8
-    status: PARTIAL
-    sampled: 2026-06-20
-    audited: 2026-06-20
+    status: OK
+    sampled: 2026-06-21
+    audited: 2026-06-21
     upstream_at_audit:
-      hld_sha: 8513c74
+      hld_sha: 8e87478          # reconciled to the integrated-tree README (was 8513c74 pre-integration)
     blocks: []
     blockedby: [redis-store]
     detail: patient-ehr.md
-    next: "INTEGRATION (now unblocked — Orchestrator/Admissions exist): Orchestrator must extract MRN from chat (EHR-FLOW-001); AdmissionsAgent must call build_live_record() before persisting (EHR-FLOW-002). This is the MRN-dedupe/EHR-enriched variant of INTAKE-FLOW-001/002 + INTAKE-IDEM-001."
+    next: "INTEGRATED: orchestrator.extract_mrn parses the chat (EHR-FLOW-001); admissions.intake calls build_live_record before persisting (EHR-FLOW-002) with MRN dedupe + name/complaint fallback (INTAKE-IDEM-001 preserved). Verified live (MRN-0007 history into Redis)."
     drift: null
 
-  # --- Dashboard arrow (dev3). Read-only UI on the fixture today; live Redis snapshot + er:events
-  #     subscription is the remaining PARTIAL work. ---
+  # --- Dashboard arrow (dev3). Live Redis snapshot + er:events stream read wired 2026-06-21. ---
 
   dashboard:                   # DASH-* — FastAPI + HTML read-only UI (Stretch)
-    status: PARTIAL
-    sampled: 2026-06-20
-    audited: 2026-06-20
+    status: OK
+    sampled: 2026-06-21
+    audited: 2026-06-21
     upstream_at_audit:
-      hld_sha: 79e8a57          # audited on the dashboard branch (pre-integration); reconcile on next sweep
+      hld_sha: 8e87478          # reconciled to the integrated-tree README (was 79e8a57 pre-integration)
     blocks: []
     blockedby: [redis-store]
     detail: dashboard.md
-    next: "implement DASH-SYS-002 and DASH-SYS-003 for live Redis snapshots and er:events subscription (read-only UI on the fixture is done; session login + optional Google OAuth in place)."
+    next: "INTEGRATED: DASH-SYS-002 (get_store()->RedisStore snapshot) + DASH-SYS-003 (current_events()->_redis_events reads the er:events Stream via XREVRANGE, mapped to {ts,event,detail}). Verified live (4 intake lines read back). Set DASHBOARD_SOURCE=redis to share the agents' Redis."
     drift: null
 
-# Domains registered in `arrows` above. The core six are OK; the redis-layer (redis-store OK,
-# agent-memory/patient-ehr PARTIAL) and dashboard (PARTIAL) arrows track infra that is built but whose
-# integration into the merged Orchestrator/Admissions/live-store is pending. Phase P (Pika CLI scripts)
-# carries no EARS specs, so it is not an arrow — it consumes incident-replay's out/ artifacts.
+# Domains registered in `arrows` above. All 11 arrows are OK as of 2026-06-21: the core six plus the
+# redis-layer (redis-store, agent-memory, patient-ehr) and dashboard, now integrated into the merged
+# Orchestrator/Admissions/main.py and verified live against Redis Cloud + Iris. Phase P (Pika CLI
+# scripts) carries no EARS specs, so it is not an arrow — it consumes incident-replay's out/ artifacts.
 unmapped: []

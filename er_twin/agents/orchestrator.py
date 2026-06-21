@@ -24,6 +24,7 @@ serialized one-at-a-time (ORCH-SYS-003).
 
 import asyncio
 import re
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -42,6 +43,7 @@ from er_twin import replay
 from er_twin.addresses import STUB_ADDRESS, address_for, seed_for
 from er_twin.agents import admissions, bed, doctor, equipment, nurse, patient, triage
 from er_twin.config import settings
+from er_twin.memory import MemoryInterface, NoopMemory
 from er_twin.protocols import (
     EquipmentLocateRequest,
     EquipmentLocateResponse,
@@ -124,14 +126,114 @@ def resolve_intent(text: str) -> str:
     return "unknown"
 
 
+# ASI:One LLM intent resolution (ORCH-LLM-001). ASI:One is OpenAI-compatible — point the OpenAI SDK at
+# its base URL and use `asi1-mini` (fastest/cheapest; classification is a short deterministic task per
+# fetch-ai-documentation/models.md). The system prompt constrains the reply to a single intent token.
+_ASIONE_BASE_URL = "https://api.asi1.ai/v1"
+_ASIONE_MODEL = "asi1-mini"
+# Hard per-request budget for the intent call. Short on purpose: well under COMMAND_TIMEOUT_SECONDS so a
+# stalled ASI:One connection degrades to the deterministic lookup fast instead of hanging (ORCH-LLM-002).
+_ASIONE_TIMEOUT_SECONDS = 8.0
+_INTENT_SYSTEM_PROMPT = (
+    "You classify a hospital ER operator's chat message into exactly one intent token. "
+    "Reply with ONLY one lowercase word, no punctuation or explanation:\n"
+    "- intake  : a new patient is arriving/has arrived or needs admission or triage\n"
+    "- oxygen  : a patient's oxygen/SpO2 is dropping, or an oxygen unit is low/failing\n"
+    "- summary : a request for ER status, an overview, or what's currently happening\n"
+    "- ping    : a connectivity or liveness test\n"
+    "- unknown : anything that fits none of the above"
+)
+
+
+def _parse_llm_intent(raw: str) -> str:
+    """Map a raw ASI:One reply to a known intent token, or raise ValueError (ORCH-LLM-001).
+
+    Tolerant of a model that wraps the token in a sentence: returns the first known intent that appears
+    as a whole word; an explicit `unknown` maps through; anything else raises so `resolve_command`
+    degrades to the deterministic keyword lookup rather than mis-dispatching."""
+    lowered = raw.lower()
+    for intent in _INTENT_KEYWORDS:  # intake, oxygen, summary, ping (insertion order = priority)
+        if re.search(rf"\b{intent}\b", lowered):
+            return intent
+    if re.search(r"\bunknown\b", lowered):
+        return "unknown"
+    raise ValueError(f"ASI:One returned no recognizable intent: {raw!r}")
+
+
 def _resolve_via_llm(text: str) -> str:
     """Resolve an intent through the ASI:One LLM (ORCH-LLM-001).
 
-    Deferred in P1: the USE_MOCK path is the only one wired, and the `openai`/ASI:One client is not
-    added yet. This stub raises so `resolve_command` exercises the documented fallback (ORCH-LLM-002)
-    whenever USE_MOCK is disabled. Phase 5 replaces the body with a real ASI:One call.
+    Raises on a missing key or any client/parse failure so `resolve_command` exercises the documented
+    fallback to the deterministic keyword lookup (ORCH-LLM-002). The `openai` import is local so the
+    USE_MOCK path never pays for it.
     """
-    raise RuntimeError("ASI:One LLM is not configured in P1 (USE_MOCK path only)")
+    if not settings.asione_api_key:
+        raise RuntimeError("ASIONE_API_KEY not set; using deterministic intent lookup")
+    from openai import OpenAI
+
+    # Fail fast: intent classification is on the chat critical path, so a connection error / rate-limit
+    # must degrade to the deterministic lookup immediately (ORCH-LLM-002), not stall on the SDK's default
+    # 600s timeout + 2 silent retries. A short timeout and no retries keep the fallback within the 30s
+    # COMMAND_TIMEOUT_SECONDS watchdog budget.
+    client = OpenAI(
+        base_url=_ASIONE_BASE_URL,
+        api_key=settings.asione_api_key,
+        timeout=_ASIONE_TIMEOUT_SECONDS,
+        max_retries=0,
+    )
+    response = client.chat.completions.create(
+        model=_ASIONE_MODEL,
+        messages=[
+            {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
+            {"role": "user", "content": text},
+        ],
+        max_tokens=16,
+        temperature=0,
+    )
+    return _parse_llm_intent(str(response.choices[0].message.content))
+
+
+# ASI:One prepends an "@<agent-address>" mention to chat it routes to an agent (e.g.
+# "@agent1qty... A new patient arrived with chest pain"). It's transport-level routing noise: the LLM
+# intent path tolerates it, but exact-match lookups (MOCK_INTAKE) and text parsing (bed id) must see the
+# operator's actual words. Strip a leading uAgents mention (`@agent1...`) at ingestion.
+_AGENT_MENTION_RE = re.compile(r"^\s*@agent1[0-9a-z]+\s+", re.IGNORECASE)
+
+
+def strip_agent_mention(text: str) -> str:
+    """Remove a leading ``@agent1...`` mention that ASI:One prepends when routing chat to an agent.
+
+    @spec ORCH-CHAT-002 — the operator's words drive intent + intake payload selection; the routing
+    mention is noise. Idempotent and a no-op when no mention is present.
+    """
+    return _AGENT_MENTION_RE.sub("", text).strip()
+
+
+def lookup_mock_intake(text: str) -> dict | None:
+    """Find a MOCK_INTAKE payload for chat text, tolerant of casing and any wrapping around the phrase.
+
+    Backstops `strip_agent_mention`: even if a routing mention or trailing text survives, a known trigger
+    phrase appearing anywhere in the message still selects the right patient payload (so chest-pain chat
+    admits Jordan Lee, not an "Unknown Patient")."""
+    lowered = text.lower()
+    for phrase, data in MOCK_INTAKE.items():
+        if phrase.lower() in lowered:
+            return data
+    return None
+
+
+# An MRN token as it appears in chat ("MRN-0007", case-insensitive). Used to enrich intake from the EHR.
+_MRN_RE = re.compile(r"\bMRN-\d+\b", re.IGNORECASE)
+
+
+def extract_mrn(text: str) -> str:
+    """Extract an `MRN-NNNN` token from chat text (normalized upper-case), or ``""`` if absent.
+
+    @spec EHR-FLOW-001 — when the chat carries an MRN it rides on `PatientIntakeRequest.mrn`; when it
+    does not, the empty string flows through and `build_live_record` mints the next sequential MRN.
+    """
+    match = _MRN_RE.search(text)
+    return match.group(0).upper() if match else ""
 
 
 def resolve_command(text: str) -> str:
@@ -177,8 +279,16 @@ def _format_intake_confirmation(
     return f"{head} {care}"
 
 
-def run_intake(store: StorageInterface, name: str, chief_complaint: str, vitals: dict) -> dict:
+def run_intake(
+    store: StorageInterface, name: str, chief_complaint: str, vitals: dict, mrn: str = "",
+    on_milestone=None,
+) -> dict:
     """Run the full intake flow and return the outcome (+ confirmation + milestone log).
+
+    `on_milestone(action, target, detail)` (optional) is invoked synchronously at each milestone, right
+    after that step mutated the store — so a caller can capture a live `er:events` line + a full-state
+    snapshot at the *real* moment of the milestone (REPLAY-SNAP-001), instead of only the final state.
+    Default `None` keeps the function pure for existing callers (tests, async wrapper).
 
     @spec INTAKE-FLOW-001 @spec INTAKE-FLOW-002 @spec INTAKE-BIND-001 @spec INTAKE-FLOW-003
     @spec INTAKE-FLOW-004 @spec INTAKE-FLOW-005 @spec INTAKE-FLOW-006 @spec INTAKE-FLOW-007
@@ -190,9 +300,12 @@ def run_intake(store: StorageInterface, name: str, chief_complaint: str, vitals:
 
     def log(action: str, target: str | None = None, **detail) -> None:
         milestones.append({"action": action, "target": target, "detail": detail})
+        if on_milestone is not None:
+            on_milestone(action, target, detail)
 
     log("intake_received", detail=chief_complaint)
-    patient_id, record, created = admissions.intake(store, name, chief_complaint, vitals)
+    # @spec EHR-FLOW-002 — AdmissionsAgent enriches the record from the master EHR before persisting.
+    patient_id, record, created = admissions.intake(store, name, chief_complaint, vitals, mrn)
     result: dict = {
         "patient_id": patient_id, "created": created, "error": None,
         "acuity": record.get("acuity"), "specialty": record.get("specialty"),
@@ -388,6 +501,21 @@ def build_status_summary(store: StorageInterface, active_o2_alert_beds: list[str
     return f"{counts} {' '.join(tail)}"
 
 
+def compose_summary(
+    store: StorageInterface, active_o2_alert_beds: list[str], recalled: list[str]
+) -> str:
+    """Render the status summary, appending a recalled-context line when memory returned facts.
+
+    @spec MEM-FLOW-002 — the summary intent queries long-term memory and folds the recalled prior
+    events into its output. Under `NoopMemory` (USE_MOCK / no Iris) `recalled` is empty, so this is
+    byte-identical to `build_status_summary` — the deterministic template path is unchanged.
+    """
+    summary = build_status_summary(store, active_o2_alert_beds)
+    if recalled:
+        summary = f"{summary} Recent context: " + "; ".join(recalled) + "."
+    return summary
+
+
 # --- Async correlation & serialization primitives ---
 
 
@@ -507,6 +635,10 @@ COMMAND_TIMEOUT_SECONDS = 30
 # Shared state store, injected by main.py so the Orchestrator and entity agents read/write one store.
 _store: StorageInterface | None = None
 
+# Agent memory (Iris in live mode, Noop under USE_MOCK / no creds), injected by main.py. Defaults to a
+# NoopMemory so the Orchestrator is safe even if main.py never calls set_memory (e.g. in unit tests).
+_memory: MemoryInterface = NoopMemory()
+
 # Incident replay recorder (Phase R): holds the per-run `seq` + incident counters, publishes milestone
 # lines to `er:events`, and mints incident ids. Reset per process run (no wall-clock — LLD §9).
 _replay = replay.ReplayRecorder()
@@ -520,23 +652,88 @@ def set_store(store: StorageInterface) -> None:
     _store = store
 
 
-def _emit_replay(ctx: Context, event: str, lines: list[dict]) -> None:
-    """Export an incident's replay brief from its recorded milestone lines (Phase R, REPLAY-BRIEF-001).
+def set_memory(memory: MemoryInterface) -> None:
+    """Inject the agent-memory backend (called from main.py at startup; defaults to NoopMemory)."""
+    global _memory
+    _memory = memory
+
+
+def _record_memory(ctx: Context, text: str) -> None:
+    """Append a one-line outcome to agent memory (MEM-FLOW-001).
+
+    Best-effort: a memory-backend failure must never break the live command (mirrors `_emit_replay`),
+    so it is logged and swallowed. Under `NoopMemory` this is a silent no-op (MEM-ERR-001)."""
+    try:
+        _memory.record_event(text)
+    except Exception:  # noqa: BLE001 — memory is non-critical; never crash the command.
+        ctx.logger.exception("memory record_event failed")
+
+
+def _recall_memory(query: str) -> list[str]:
+    """Recall relevant prior event facts from memory (MEM-FLOW-002); returns ``[]`` on any failure."""
+    try:
+        return _memory.recall(query)
+    except Exception:  # noqa: BLE001 — degrade to no recalled context rather than crash the summary.
+        return []
+
+
+def _log_milestone(
+    store: StorageInterface, event: str, actor: str, action: str,
+    target: str | None = None, **detail,
+) -> dict:
+    """Publish a milestone line AND capture a full-state snapshot of the store at that instant.
+
+    @spec REPLAY-LOG-001 — the `er:events` line (unchanged shape) is published by `ReplayRecorder.log`.
+    @spec REPLAY-SNAP-001 — the same call captures every entity record + a real wall-clock `ts`
+    (`time.time()`, injected here so `replay.py` stays wall-clock-free) into the seq-keyed timeline used
+    by the replay page / library. The published line carries no `ts` (REPLAY-LOG-002 untouched).
+    """
+    line = _replay.log(store, event, actor, action, target, **detail)
+    _replay.snapshot(store, line["seq"], time.time(), action=action, actor=actor, target=target)
+    return line
+
+
+def _emit_replay(ctx: Context, event: str, lines: list[dict]) -> str | None:
+    """Export an incident's replay brief + snapshot timeline; return the incident id (or None).
 
     Best-effort: a replay-export failure must never break the live command, so it is logged and
     swallowed. Skips entirely when no store is wired or no milestone lines were recorded
     (REPLAY-BRIEF-003 — no empty artifacts)."""
     if _store is None or not lines:
-        return
+        return None
     try:
         incident_id = _replay.next_incident_id(event)
+        incident_type = replay.INCIDENT_TYPES[event]
         brief = replay.export_incident(
-            lines, incident_id, replay.INCIDENT_TYPES[event], _store, out_dir=REPLAY_OUT_DIR
+            lines, incident_id, incident_type, _store, out_dir=REPLAY_OUT_DIR
         )
-        if brief is not None:
-            ctx.logger.info(f"replay brief written: {incident_id} -> {REPLAY_OUT_DIR}/")
+        if brief is None:
+            return None
+        ctx.logger.info(f"replay brief written: {incident_id} -> {REPLAY_OUT_DIR}/")
+        # @spec REPLAY-SNAP-003 @spec REPLAY-LIB-001 — write the full-state snapshot timeline
+        # (with per-snapshot ts + library metadata) for the replay page and the /library.
+        snapshots = _replay.snapshots_for(ln["seq"] for ln in lines)
+        timeline = replay.export_incident_timeline(
+            snapshots, incident_id, incident_type, brief["title"], brief["summary"],
+            display=display, out_dir=REPLAY_OUT_DIR,
+        )
+        if timeline is not None:
+            ctx.logger.info(
+                f"replay timeline written: {incident_id} -> "
+                f"{REPLAY_OUT_DIR}/{replay.REPLAY_SUBDIR}/ ({len(snapshots)} snapshots)"
+            )
+        return incident_id
     except Exception:  # noqa: BLE001 — replay export is non-critical; never crash the command.
         ctx.logger.exception("replay export failed")
+        return None
+
+
+def _replay_note(incident_id: str | None) -> str:
+    """Chat suffix pointing at the captured in-browser replay (text only; no Pika call in-process).
+
+    @spec REPLAY-FRAME-001 — the link opens the data-driven `/replay/{incident}` reconstruction.
+    """
+    return f" Replay captured → /replay/{incident_id}" if incident_id else ""
 
 
 def _new_flow_id(kind: str) -> str:
@@ -584,6 +781,7 @@ async def handle_chat(ctx: Context, sender: str, msg: ChatMessage):
     )
 
     text = " ".join(item.text for item in msg.content if isinstance(item, TextContent)).strip()
+    text = strip_agent_mention(text)  # drop ASI:One's "@agent1..." routing prefix before parsing
     session_id = str(ctx.session)
     ctx.logger.info(f"chat[{session_id[:8]}] received: {text!r}")
 
@@ -618,7 +816,9 @@ async def _begin_command(ctx: Context, cmd: PendingChatCommand) -> None:
 async def _dispatch_command(ctx: Context, cmd: PendingChatCommand, flow_id: str) -> bool:
     """Resolve intent and start the flow. Return True if it finished synchronously (gate frees now),
     False if it is an async flow that frees the gate later from its terminal `@on_message` handler."""
-    intent = resolve_command(cmd.text)
+    # Run intent resolution off the event loop: under USE_MOCK it's a trivial sync lookup, but the live
+    # ASI:One path (_resolve_via_llm) is a blocking HTTP call that would otherwise stall the whole Bureau.
+    intent = await asyncio.to_thread(resolve_command, cmd.text)
     ctx.logger.info(f"chat[{cmd.session_id[:8]}] flow={flow_id} resolved intent={intent!r}")
 
     if intent == "ping":
@@ -630,19 +830,30 @@ async def _dispatch_command(ctx: Context, cmd: PendingChatCommand, flow_id: str)
 
     if intent == "intake":
         # @spec INTAKE-FLOW-001 — run the intake flow over the shared store, relay confirmation.
-        data = MOCK_INTAKE.get(cmd.text) or {"name": "Unknown Patient", "chief_complaint": cmd.text, "vitals": {}}
+        data = lookup_mock_intake(cmd.text) or {"name": "Unknown Patient", "chief_complaint": cmd.text, "vitals": {}}
         if _store is None:
             await _send_chat(ctx, cmd.sender, MOCK_REPLIES["intake"])  # no store wired; safe fallback
             return True
-        outcome = run_intake(_store, data["name"], data["chief_complaint"], data["vitals"])
+        # @spec EHR-FLOW-001 — carry any MRN named in the chat so the AdmissionsAgent loads its history.
+        mrn = extract_mrn(cmd.text)
+        # @spec REPLAY-LOG-001 @spec REPLAY-SNAP-001 — capture each milestone live, as its step mutates
+        # the store, so the snapshot timeline shows real intermediate states (not just the final one).
+        lines: list[dict] = []
+
+        def _capture_intake(action: str, target: str | None, detail: dict) -> None:
+            lines.append(
+                _log_milestone(_store, "intake", replay.actor_for(action), action, target, **detail)
+            )
+
+        outcome = run_intake(
+            _store, data["name"], data["chief_complaint"], data["vitals"], mrn,
+            on_milestone=_capture_intake,
+        )
         ctx.logger.info(f"intake -> {outcome['patient_id']} status={outcome['status']} error={outcome['error']}")
-        # @spec REPLAY-LOG-001 — publish each intake milestone to er:events, then export the brief.
-        lines = [
-            _replay.log(_store, "intake", replay.actor_for(m["action"]), m["action"], m["target"], **m["detail"])
-            for m in outcome["milestones"]
-        ]
-        _emit_replay(ctx, "intake", lines)
-        await _send_chat(ctx, cmd.sender, outcome["confirmation"])
+        incident_id = _emit_replay(ctx, "intake", lines)
+        # @spec MEM-FLOW-001 — record the intake outcome to agent memory (non-fatal).
+        _record_memory(ctx, outcome["confirmation"])
+        await _send_chat(ctx, cmd.sender, outcome["confirmation"] + _replay_note(incident_id))
         return True
 
     if intent == "oxygen":
@@ -664,7 +875,7 @@ async def _dispatch_command(ctx: Context, cmd: PendingChatCommand, flow_id: str)
         oxygen_flows[flow_id] = flow
         # @spec REPLAY-LOG-001 — first oxygen milestone; the rest accrue across the async handlers.
         flow.lines.append(
-            _replay.log(_store, "oxygen", "orchestrator", "oxygen_drop_simulated", eid, bed=bed_id)
+            _log_milestone(_store, "oxygen", "orchestrator", "oxygen_drop_simulated", eid, bed=bed_id)
         )
         await ctx.send(
             address_for(eid),
@@ -685,11 +896,15 @@ async def _dispatch_command(ctx: Context, cmd: PendingChatCommand, flow_id: str)
             for fid in in_flight_o2_dispatches.values()
             if fid in oxygen_flows
         ]
-        summary = build_status_summary(_store, alert_beds)
+        # @spec MEM-FLOW-002 — recall prior events first and fold them into the summary (empty under Noop).
+        recalled = _recall_memory("recent ER patients, admissions, and alerts")
+        summary = compose_summary(_store, alert_beds, recalled)
         # @spec REPLAY-LOG-001 — one `summary_generated` milestone, then export the brief.
-        line = _replay.log(_store, "summary", "orchestrator", "summary_generated", None, text=summary)
-        _emit_replay(ctx, "summary", [line])
-        await _send_chat(ctx, cmd.sender, summary)
+        line = _log_milestone(_store, "summary", "orchestrator", "summary_generated", None, text=summary)
+        incident_id = _emit_replay(ctx, "summary", [line])
+        # @spec MEM-FLOW-001 — record the generated summary as a session event (non-fatal).
+        _record_memory(ctx, summary)
+        await _send_chat(ctx, cmd.sender, summary + _replay_note(incident_id))
         return True
 
     # @spec ORCH-LLM-004 — unknown intent: clarify, dispatch nothing.
@@ -761,13 +976,16 @@ async def _finish_oxygen(ctx: Context, flow_id: str, reply: str) -> None:
     chat-triggered (gated) flow. Autonomous-alert flows have no gate to release."""
     flow = oxygen_flows.get(flow_id)
     gated = bool(flow and flow.chat_sender)
+    incident_id: str | None = None
     if flow is not None and _store is not None:
         # @spec REPLAY-LOG-001 — terminal success milestone, then export the incident's brief.
         if flow.status == "done":
-            flow.lines.append(_replay.log(_store, "oxygen", "orchestrator", "oxygen_event_complete", flow.bed_id))
-        _emit_replay(ctx, "oxygen", flow.lines)
+            flow.lines.append(_log_milestone(_store, "oxygen", "orchestrator", "oxygen_event_complete", flow.bed_id))
+        incident_id = _emit_replay(ctx, "oxygen", flow.lines)
+    # @spec MEM-FLOW-001 — record the oxygen-event outcome to agent memory (non-fatal).
+    _record_memory(ctx, reply)
     if flow and flow.chat_sender:
-        await _send_chat(ctx, flow.chat_sender, reply)
+        await _send_chat(ctx, flow.chat_sender, reply + _replay_note(incident_id))
     else:
         ctx.logger.info(f"oxygen (no chat session): {reply}")
     _cleanup_oxygen(flow_id)
@@ -799,7 +1017,7 @@ async def on_low_supply(ctx: Context, sender: str, msg: LowSupplyAlert):
     ctx.logger.info(f"alert_raised: {eid} low ({msg.supply_level}%) at {flow.bed_id} -> locating (flow={flow.flow_id})")
     # @spec REPLAY-LOG-001 — autonomous alert milestone.
     flow.lines.append(
-        _replay.log(_store, "oxygen", "equipment", "alert_raised", eid, supply_level=msg.supply_level, bed=flow.bed_id)
+        _log_milestone(_store, "oxygen", "equipment", "alert_raised", eid, supply_level=msg.supply_level, bed=flow.bed_id)
     )
 
     # @spec OXY-FLOW-002 — select a same-type replacement (decision R2-E sort).
@@ -807,7 +1025,7 @@ async def on_low_supply(ctx: Context, sender: str, msg: LowSupplyAlert):
     flow.replacement_id = replacement
     if replacement is None:
         # @spec OXY-ERR-001 — no qualifying unit: report and do not dispatch anything.
-        flow.lines.append(_replay.log(_store, "oxygen", "equipment", "no_replacement_unit_available", eid, bed=flow.bed_id))
+        flow.lines.append(_log_milestone(_store, "oxygen", "equipment", "no_replacement_unit_available", eid, bed=flow.bed_id))
         await _finish_oxygen(ctx, flow.flow_id, f"Low O2 on {display(flow.bed_id)}: no available replacement unit nearby.")
         return
     await ctx.send(
@@ -832,13 +1050,13 @@ async def on_locate(ctx: Context, sender: str, msg: EquipmentLocateResponse):
     ctx.logger.info(f"unit_located: {msg.equipment_id} at {msg.location} -> dispatching nurse (flow={flow.flow_id})")
     # @spec REPLAY-LOG-001 — replacement located.
     flow.lines.append(
-        _replay.log(_store, "oxygen", "equipment", "unit_located", msg.equipment_id, location=msg.location, bed=flow.bed_id)
+        _log_milestone(_store, "oxygen", "equipment", "unit_located", msg.equipment_id, location=msg.location, bed=flow.bed_id)
     )
 
     # @spec OXY-FLOW-004 — dispatch an available nurse to bring the unit.
     nurse_id = nurse.find_available_nurse(_store)
     if nurse_id is None:
-        flow.lines.append(_replay.log(_store, "oxygen", "nurse", "no_dispatch_nurse_available", flow.bed_id))
+        flow.lines.append(_log_milestone(_store, "oxygen", "nurse", "no_dispatch_nurse_available", flow.bed_id))
         await _finish_oxygen(
             ctx, flow.flow_id,
             f"Replacement {display(msg.equipment_id)} located for {display(flow.bed_id)}, "
@@ -864,17 +1082,17 @@ async def on_dispatch(ctx: Context, sender: str, msg: StaffDispatchResponse):
         return
     nurse_id = flow.nurse_id or msg.staff_id
     if not msg.accepted:
-        flow.lines.append(_replay.log(_store, "oxygen", "nurse", "no_dispatch_nurse_available", flow.bed_id, nurse=nurse_id))
+        flow.lines.append(_log_milestone(_store, "oxygen", "nurse", "no_dispatch_nurse_available", flow.bed_id, nurse=nurse_id))
         await _finish_oxygen(ctx, flow.flow_id, f"{display(nurse_id)} declined the oxygen dispatch for {display(flow.bed_id)}.")
         return
     flow.status = "done"  # mark before mutating so a duplicate response is a no-op
     # @spec REPLAY-LOG-001 — nurse accepts, then the cross-entity swap completes.
     flow.lines.append(
-        _replay.log(_store, "oxygen", "nurse", "nurse_dispatched", nurse_id, bed=flow.bed_id, equipment=flow.replacement_id)
+        _log_milestone(_store, "oxygen", "nurse", "nurse_dispatched", nurse_id, bed=flow.bed_id, equipment=flow.replacement_id)
     )
     apply_oxygen_swap(_store, flow.alert_equipment_id, flow.replacement_id, flow.bed_id, nurse_id)
     flow.lines.append(
-        _replay.log(_store, "oxygen", "orchestrator", "oxygen_swap_complete", flow.bed_id,
+        _log_milestone(_store, "oxygen", "orchestrator", "oxygen_swap_complete", flow.bed_id,
                     depleted=flow.alert_equipment_id, replacement=flow.replacement_id, nurse=nurse_id)
     )
     ctx.logger.info(

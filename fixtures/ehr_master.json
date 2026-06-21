@@ -302,5 +302,14 @@
     "allergies": [
       "ciprofloxacin"
     ]
+  },
+  "MRN-0021": {
+    "mrn": "MRN-0021",
+    "name": "Jordan Lee",
+    "birthdate": "",
+    "gender": "U",
+    "medications": [],
+    "conditions": [],
+    "allergies": []
   }
 }

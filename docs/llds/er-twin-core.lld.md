@@ -467,4 +467,107 @@ non-empty. The manual VSCode operator flow (Alternative B) is documented in
 
 ---
 
+## 9.1 Data-Driven Replay (snapshot timeline → replay page → keyframes → Pika)
+
+Extends §9 from a *narrative* brief to a *data-grounded reconstruction*. The brief (above) is
+unchanged and remains the documented fallback; this layer adds a full-state snapshot timeline, a
+playback page that reuses the dashboard floor map, milestone keyframe PNGs, and a Pika
+keyframe-interpolated clip. The boundary stays **file-based** (`out/`); Pika is never imported into
+`er_twin/`. `REPLAY-LOG-002` and the `er:events` line shape are **unchanged** — `ts` lives only on the
+snapshot records below, never on the `er:events` line.
+
+### Snapshot timeline (`out/replay/{incident}.json`)
+
+On each milestone the Orchestrator captures a **full-state snapshot** — every `er:{entity}:{id}`
+record at that instant plus a real wall-clock `ts` — into an in-process, seq-keyed timeline held by
+the `ReplayRecorder`. `ts` is **injected** by the Orchestrator (`time.time()`), so `replay.py` stays
+wall-clock-free and unit-testable. Re-capturing the same `seq` overwrites (idempotent). On export the
+ordered timeline is written to `out/replay/{incident}.json`; if no milestones ran, nothing is written
+(mirrors `REPLAY-BRIEF-003`).
+
+```json
+{
+  "incident_id": "patient_intake-0001",
+  "incident_type": "patient_intake",
+  "title": "Chest pain intake — ESI-2",
+  "summary": "Jordan Lee (chest pain) admitted to bed-1; care team: Nurse Maya, Dr. Smith.",
+  "speed_factor": 10,
+  "start_ts": 1718900000.12,
+  "end_ts": 1718900000.34,
+  "involved": ["Jordan Lee", "bed-1", "Nurse Maya", "Dr. Smith"],
+  "video_url": null,
+  "snapshots": [
+    {
+      "seq": 0, "ts": 1718900000.12,
+      "action": "intake_received", "actor": "orchestrator", "target": null,
+      "entities": {
+        "patients": [ { "id": "p1", "status": "waiting", "...": "..." } ],
+        "beds": [ "..." ], "nurses": [ "..." ], "doctors": [ "..." ], "equipment": [ "..." ]
+      }
+    }
+  ]
+}
+```
+
+- `entities` uses the same plural keys + record shape the dashboard `snapshot()` produces, so the
+  replay page can feed each snapshot straight into the shared floor-positioning code.
+- **Library metadata** (`REPLAY-LIB-001`, all pure derivations): `title`/`summary` (from the brief),
+  `incident_type`, `start_ts`/`end_ts` (first/last snapshot `ts`), `involved[]` (distinct timeline
+  `actor`+`target`, mapped through `DISPLAY_NAMES`), and `speed_factor`.
+- **`video_url`** starts `null`; the Phase-4 Pika script writes the returned media URL back into this
+  file after a successful render (`REPLAY-LIB-003`).
+
+### Replay playback page (`/replay/{incident}`)
+
+A static page (`dashboard/static/replay.html` + `replay.js`) that reuses the dashboard's SVG floor map.
+The floor layout, zone/bed geometry, and entity→position logic are factored out of `app.js` into a
+shared `dashboard/static/floor.js` (`window.Floor`), imported by both the live dashboard and the replay
+page — **no behavior change to the live dashboard**. The page fetches `GET /api/replay/{incident}`
+(reads the `out/` JSON directly; **no `datasource`/Redis dependency**), then plays snapshots back
+**paced by real `ts` deltas**, tweening each entity token from its zone in snapshot *i* to snapshot
+*i+1*. Tokens have **discrete locations** (zones/beds), so a move is a linear tween of the token across
+the `ts` interval — an approximation, not exact coordinates. A scrub/seek control and a JS seek API
+(`window.replayApi`) let an operator (or the Playwright capturer) jump to any milestone.
+
+> **Independence (correction to the original Redis-key idea):** the dashboard runs in a *separate
+> process* from the Orchestrator, so an `InMemoryStore` timeline would be invisible to the replay page
+> and a Redis-key timeline would silently depend on the unfinished `DASH-SYS-002`. The `out/` file
+> mirrors the existing brief export and keeps this arrow independent.
+
+### Keyframe selection + frame capture
+
+`replay.select_keyframes(snapshots, cap=KEYFRAME_CAP)` is a **pure** function (unit-tested without a
+browser): it keeps the snapshots where entity state actually changed, then caps the result —
+**degrading to evenly-spaced frames including first and last** when over the cap.
+
+> **Verified cap = 2.** `mcp__pika-mcp__generate_keyframes_video` interpolates between exactly two
+> images (`first_frame` + `last_frame`) and accepts `duration` ∈ {5, 10} only. So `KEYFRAME_CAP = 2`
+> and selection degrades to **start → end**. (If a future Pika model accepts 3, bump the constant and
+> it degrades to start/mid/end automatically.)
+
+`scripts/capture_replay_frames.py` (Playwright/headless Chromium) loads `/replay/{incident}`, seeks to
+each selected keyframe via `window.replayApi`, and screenshots the floor element to
+`out/frames/{incident}/frame_NN.png` (`REPLAY-KEY-002`). If Playwright is unavailable on the day, swap
+the rasterizer for `resvg`/`cairosvg` on the same SVG — selection and the Pika step are unchanged.
+
+### Pika keyframe clip (`scripts/run_pika_keyframes.ps1`)
+
+External, file-boundary (sibling to `run_pika_replay.ps1`): passes the first and last
+`out/frames/{incident}/*.png` to `mcp__pika-mcp__generate_keyframes_video` (single start→end clip) via
+the Claude CLI, with `duration = clamp(real_elapsed / speed_factor → {5,10})` (`REPLAY-LIB-002`), polls
+`task_status`, writes `out/pika_result.json`, and writes the returned media URL back into
+`out/replay/{incident}.json` as `video_url` (`REPLAY-LIB-003`). If frames are missing it falls back to
+the existing text-brief Pika path (`run_pika_replay.ps1`) rather than crashing (`REPLAY-PIKA-002`).
+
+### Incident library page (`/library`, session-only)
+
+A **gated** page (reuses the dashboard session gate) listing every incident currently in `out/replay/`
+for the session — no cross-run index, no date grouping. `GET /api/library` globs `out/replay/*.json`
+and returns each entry's metadata; `dashboard/static/library.html` + `library.js` render a card list
+with the embedded `<video src=video_url>`, description (`title`+`summary`), event type, start/end times,
+and the `involved` list. An incident with no `video_url` (Pika not run/failed) still renders its
+metadata card with a link to the in-browser `/replay/{incident}` fallback (`REPLAY-LIB-004/005`).
+
+---
+
 *Next phase after approval: EARS specs for the 3 events in `docs/specs/`, then the implementation plan in `docs/plans/`.*

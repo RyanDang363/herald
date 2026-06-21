@@ -26,7 +26,8 @@ from er_twin.agents import orchestrator as orch
 from er_twin.agents.orchestrator import orchestrator
 from er_twin.agents.stub import stub
 from er_twin.config import settings
-from er_twin.storage import InMemoryStore, StorageInterface
+from er_twin.memory import make_memory
+from er_twin.storage import StorageInterface, make_store
 
 # Modules that seed a slice of the shared store (have init_state). Order is irrelevant.
 _ENTITY_MODULES = (patient, bed, nurse, doctor, equipment)
@@ -38,6 +39,32 @@ def seed_state(store: StorageInterface) -> None:
     """Seed every entity's clean initial inventory into the shared store (deterministic, pre-run)."""
     for module in _ENTITY_MODULES:
         module.init_state(store)
+
+
+def _inventory_counts(store: StorageInterface) -> dict[str, int]:
+    """Read back the live index sets so the boot banner reports what actually landed in the store
+    (not the module constants), exposing a partial/failed seed instead of hiding it."""
+    return {e: len(store.list_ids(e)) for e in ("patient", "bed", "nurse", "doctor", "equipment")}
+
+
+def ensure_seeded(store: StorageInterface) -> dict[str, int]:
+    """Seed the store, verify the core inventory landed, and re-seed once if it did not.
+
+    With the demo-default `InMemoryStore` the seed is always durable. With a persistent `RedisStore`
+    it must not be assumed: a prior/parallel run or a transient backend error can leave the keyspace
+    without beds/nurses, after which the Orchestrator answers every intake with `no_bed_available`
+    while the boot log still looks healthy. So we seed, read the indexes back, and retry once if beds
+    or nurses are missing — turning a silent downstream failure into a loud, self-healing startup step.
+    Returns the verified counts for the boot banner.
+    """
+    seed_state(store)
+    seed_baseline(store)
+    counts = _inventory_counts(store)
+    if counts["bed"] == 0 or counts["nurse"] == 0:
+        seed_state(store)
+        seed_baseline(store)
+        counts = _inventory_counts(store)
+    return counts
 
 
 def seed_baseline(store: StorageInterface) -> None:
@@ -78,12 +105,17 @@ def build_bureau(store: StorageInterface) -> Bureau:
 
 
 def main() -> None:
-    store = InMemoryStore()
-    seed_state(store)
-    seed_baseline(store)
-    orch.set_store(store)  # the Orchestrator coordinates intake over this same store
+    # Backend selection lives in the factories (LLD §4): USE_MOCK=true ⇒ InMemoryStore + NoopMemory
+    # (zero-dependency demo); USE_MOCK=false with REDIS_URL / AGENT_MEMORY_* set ⇒ live Redis + Iris.
+    store = make_store()
+    memory = make_memory()
+    counts = ensure_seeded(store)  # seed + verify the inventory actually landed (self-healing)
+    orch.set_store(store)    # the Orchestrator coordinates intake over this same store
+    orch.set_memory(memory)  # ...and records/recalls ER events through this memory backend
 
     print(f"USE_MOCK             = {settings.use_mock}")
+    print(f"store                = {type(store).__name__}")
+    print(f"memory               = {type(memory).__name__}")
     print(f"orchestrator.address = {ORCHESTRATOR_ADDRESS}")
     print(f"stub.address         = {STUB_ADDRESS}")
     print(
@@ -91,6 +123,17 @@ def main() -> None:
         f"{len(nurse.NURSES)} nurses, {len(doctor.DOCTORS)} doctors, "
         f"{len(equipment.EQUIPMENT)} equipment, +admissions +triage"
     )
+    # Read-back banner: proves the *store* (not just the constants) holds the inventory. A zero here
+    # is the early warning that intakes would fail with no_bed_available.
+    print(
+        f"inventory (in store) = {counts['patient']} patients, {counts['bed']} beds, "
+        f"{counts['nurse']} nurses, {counts['doctor']} doctors, {counts['equipment']} equipment"
+    )
+    if counts["bed"] == 0 or counts["nurse"] == 0:
+        print(
+            "WARNING: core inventory (beds/nurses) missing after seed — intakes will report "
+            "no_bed_available. Check REDIS_URL / backend connectivity before demoing."
+        )
     build_bureau(store).run()
 
 

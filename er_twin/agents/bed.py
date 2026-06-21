@@ -78,12 +78,16 @@ def find_available_bed(store: StorageInterface, required_specialty: str) -> str 
     @spec INTAKE-ERR-001 — fall back to a free `general` bed when no specialty match is free.
     @spec INTAKE-ERR-002 — return None when no bed is free at all (caller leaves the patient waiting).
     """
-    free = [bid for bid in BEDS if store.get(bed_key(bid)).get("occupied_by") is None]
+    # A bed is selectable only if its record actually exists and is free — a missing/empty hash
+    # (e.g. an un-seeded backend) must NOT be treated as an available bed (it has no specialty and
+    # would never match anyway, but counting it as "free" masks the real "inventory missing" problem).
+    records = {bid: store.get(bed_key(bid)) for bid in BEDS}
+    free = [bid for bid, rec in records.items() if rec and rec.get("occupied_by") is None]
     for bid in free:
-        if store.get(bed_key(bid)).get("specialty") == required_specialty:
+        if records[bid].get("specialty") == required_specialty:
             return bid
     for bid in free:
-        if store.get(bed_key(bid)).get("specialty") == "general":
+        if records[bid].get("specialty") == "general":
             return bid
     return None
 

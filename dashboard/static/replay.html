@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ER Twin — Incident Replay</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>AgentER — Incident Replay</h1>
+    <div class="meta">
+      <span id="banner" class="banner hidden">replay not found</span>
+      <span id="replay-id" class="updated">—</span>
+      <a class="logout" href="/library">Library</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel wide floor-panel">
+      <div class="panel-topline">
+        <h2 id="replay-title">Incident Replay</h2>
+        <p id="replay-sub" class="panel-note">Reconstructed from captured ER state — real-time motion on the live floor map.</p>
+      </div>
+      <div id="floor-map" class="floor-map"></div>
+
+      <div class="replay-controls">
+        <button id="replay-play" type="button" class="replay-btn" aria-label="Play / pause">▶ Play</button>
+        <input id="replay-scrub" class="replay-scrub" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek" />
+        <span id="replay-clock" class="replay-clock">00:00</span>
+      </div>
+      <p id="replay-caption" class="replay-caption">—</p>
+    </section>
+  </main>
+
+  <script src="/static/floor.js"></script>
+  <script src="/static/replay.js"></script>
+</body>
+</html>

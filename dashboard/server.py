@@ -11,6 +11,8 @@ username/password fallback. A demo access gate, NOT real HIPAA compliance (the p
 synthetic data; production compliance is out of scope).
 """
 
+import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +27,20 @@ from er_twin.config import settings
 from .datasource import current_events, derive_summary, live_snapshot
 
 _STATIC = Path(__file__).parent / "static"
+
+# Incident replay artifacts written by the Orchestrator (er_twin.replay, LLD §9.1). Resolved relative
+# to the repo root so the dashboard reads the same out/replay/ the agents write, regardless of CWD.
+_REPLAY_DIR = Path(__file__).parent.parent / "out" / "replay"
+# Incident ids are `{incident_type}-{n:04d}` — a strict allowlist also blocks path traversal.
+_INCIDENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _replay_file(incident_id: str) -> Path | None:
+    """The `out/replay/{incident_id}.json` path if it exists and the id is safe, else None."""
+    if not _INCIDENT_ID_RE.fullmatch(incident_id):
+        return None
+    path = _REPLAY_DIR / f"{incident_id}.json"
+    return path if path.is_file() else None
 
 app = FastAPI(title="ER Twin — Admin Dashboard")
 app.add_middleware(SessionMiddleware, secret_key=settings.dashboard_secret_key)
@@ -151,6 +167,67 @@ def api_state(user: str = Depends(require_api)) -> JSONResponse:
 @app.get("/api/events")
 def api_events(user: str = Depends(require_api)) -> JSONResponse:
     return JSONResponse({"events": current_events()})
+
+
+# --- Incident replay (data-driven, LLD §9.1) ----------------------------------
+#
+# The replay page + its JSON are public (synthetic data; needed by the headless frame capturer and by
+# judges opening a shared link). The /library index is gated (see below). @spec REPLAY-FRAME-001/002
+
+
+@app.get("/replay/{incident_id}")
+def replay_page(incident_id: str) -> FileResponse:
+    """Serve the replay playback page; the page fetches /api/replay/{id} and degrades if absent."""
+    return FileResponse(_STATIC / "replay.html")
+
+
+@app.get("/api/replay/{incident_id}")
+def api_replay(incident_id: str) -> JSONResponse:
+    """Return the incident's snapshot timeline from `out/replay/{incident}.json` (404 if missing)."""
+    path = _replay_file(incident_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="incident replay not found")
+    return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+
+
+def _library_entry(record: dict, fallback_id: str) -> dict:
+    """Project an incident record down to the library card metadata (no heavy snapshot payload)."""
+    incident_id = record.get("incident_id", fallback_id)
+    return {
+        "incident_id": incident_id,
+        "incident_type": record.get("incident_type"),
+        "title": record.get("title"),
+        "summary": record.get("summary"),
+        "start_ts": record.get("start_ts"),
+        "end_ts": record.get("end_ts"),
+        "speed_factor": record.get("speed_factor"),
+        "involved": record.get("involved", []),
+        "video_url": record.get("video_url"),
+        "snapshot_count": len(record.get("snapshots", [])),
+        "replay_url": f"/replay/{incident_id}",  # in-browser fallback (REPLAY-LIB-005)
+    }
+
+
+@app.get("/library")
+def library_page(request: Request):
+    """The session-gated incident library; redirects to login when unauthenticated. @spec REPLAY-LIB-004"""
+    if not current_user(request):
+        return RedirectResponse("/login", status_code=303)
+    return FileResponse(_STATIC / "library.html")
+
+
+@app.get("/api/library")
+def api_library(user: str = Depends(require_api)) -> JSONResponse:
+    """List this session's incidents from `out/replay/*.json` with their metadata. @spec REPLAY-LIB-004"""
+    entries: list[dict] = []
+    if _REPLAY_DIR.is_dir():
+        for path in sorted(_REPLAY_DIR.glob("*.json")):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue  # a half-written / corrupt file must not break the whole library
+            entries.append(_library_entry(record, path.stem))
+    return JSONResponse({"incidents": entries})
 
 
 @app.post("/api/command")
