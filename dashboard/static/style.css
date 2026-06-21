@@ -68,8 +68,27 @@ body.detail-open { overflow: hidden; }
 .brand-block {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   max-width: 640px;
+}
+
+.brand-head {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-width: 0;
+}
+
+.brand-logo {
+  width: clamp(52px, 5vw, 78px);
+  height: clamp(52px, 5vw, 78px);
+  flex: none;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 16px rgba(32, 56, 68, 0.12));
+}
+
+.brand-title {
+  min-width: 0;
 }
 
 .eyebrow,

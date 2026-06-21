@@ -1033,27 +1033,39 @@ function buildExteriorShell3d(view) {
   );
   const bodyColor = 0xf3f5f8;
   const trimColor = 0x8f96af;
+  const darkTrimColor = 0x657086;
   const glassColor = 0xa6cad5;
+  const darkGlassColor = 0x6f9ead;
   const signColor = 0xc94755;
   const slabColor = 0x8a8fa7;
   const frontWallZ = floorWorld((FLOOR_FOOTPRINT.left + FLOOR_FOOTPRINT.right) / 2, FLOOR_FOOTPRINT.bottom, 0).z;
   const frontFeatureZ = frontWallZ + 0.09;
-  const wallHeight = 0.96;
-  const wallBaseTop = 0.27;
+  const wallHeight = 1.64;
+  const wallBaseTop = 0.2;
   const wallCenterY = wallBaseTop + wallHeight / 2;
-  const copingHeight = 0.07;
+  const copingHeight = 0.09;
   const copingCenterY = wallBaseTop + wallHeight + copingHeight / 2;
   const roofY = wallBaseTop + wallHeight + copingHeight + 0.012;
   const roofPoints = exteriorRoofPerimeterPoints();
 
-  const addFrontWindow = (x, y, w = 0.42, h = 0.28) => {
-    addExteriorBox3d(view, w, h, 0.045, x, y, frontFeatureZ, {
-      color: glassColor, roughness: 0.99, metalness: 0, opacity: 0.88,
+  const addFrontWindow = (x, y, w = 0.42, h = 0.38) => {
+    addExteriorBox3d(view, w, h, 0.05, x, y, frontFeatureZ, {
+      color: glassColor, roughness: 0.99, metalness: 0, opacity: 0.78,
     });
-    addExteriorBox3d(view, 0.028, h + 0.04, 0.05, x, y, frontFeatureZ + 0.01, {
-      color: trimColor, roughness: 0.99, metalness: 0, opacity: 0.98,
+    const frameDepth = 0.065;
+    const frameY = frontFeatureZ + 0.02;
+    [
+      [w + 0.08, 0.035, x, y + h / 2],
+      [w + 0.08, 0.035, x, y - h / 2],
+      [0.035, h + 0.07, x - w / 2, y],
+      [0.035, h + 0.07, x + w / 2, y],
+      [0.025, h, x, y],
+    ].forEach(([fw, fh, fx, fy]) => {
+      addExteriorBox3d(view, fw, fh, frameDepth, fx, fy, frameY, {
+        color: trimColor, roughness: 0.99, metalness: 0, opacity: 0.98,
+      });
     });
-    addExteriorBox3d(view, w + 0.05, 0.028, 0.05, x, y, frontFeatureZ + 0.01, {
+    addExteriorBox3d(view, w * 0.34, 0.025, 0.07, x, y, frontFeatureZ + 0.03, {
       color: trimColor, roughness: 0.99, metalness: 0, opacity: 0.98,
     });
   };
@@ -1093,52 +1105,53 @@ function buildExteriorShell3d(view) {
     color: trimColor, roughness: 0.99, metalness: 0, opacity: 0.86,
   });
 
-  [-0.31, -0.12, 0.12, 0.31].forEach((offset) => {
-    addFrontWindow(center.x + width * offset, 1.02);
-    addFrontWindow(center.x + width * offset, 0.66);
-  });
-  [-0.4, -0.26, 0.26, 0.4].forEach((offset) => {
-    addFrontWindow(center.x + width * offset, 0.32, 0.34, 0.24);
+  [-0.42, -0.3, -0.18, 0.18, 0.3, 0.42].forEach((offset) => {
+    addFrontWindow(center.x + width * offset, 1.3, 0.44, 0.4);
+    addFrontWindow(center.x + width * offset, 0.75, 0.4, 0.34);
   });
 
-  addExteriorBox3d(view, width * 0.36, 0.24, 0.2, center.x, 0.56, frontFeatureZ + 0.015, {
-    color: signColor, roughness: 0.99, metalness: 0, opacity: 0.99,
+  const entranceWidth = 2.15;
+  addExteriorBox3d(view, entranceWidth + 0.26, 0.92, 0.08, center.x, 0.46, frontFeatureZ + 0.01, {
+    color: darkTrimColor, roughness: 0.99, metalness: 0, opacity: 0.98,
   });
-  addExteriorBox3d(view, width * 0.04, 0.72, 0.16, center.x - width * 0.14, 0.24, frontFeatureZ - 0.005, {
-    color: signColor, roughness: 0.99, metalness: 0, opacity: 0.99,
+  addExteriorBox3d(view, entranceWidth, 0.78, 0.09, center.x, 0.43, frontFeatureZ + 0.04, {
+    color: darkGlassColor, roughness: 0.99, metalness: 0, opacity: 0.82,
   });
-  addExteriorBox3d(view, width * 0.04, 0.72, 0.16, center.x + width * 0.14, 0.24, frontFeatureZ - 0.005, {
-    color: signColor, roughness: 0.99, metalness: 0, opacity: 0.99,
+  addExteriorBox3d(view, 0.04, 0.78, 0.11, center.x, 0.43, frontFeatureZ + 0.09, {
+    color: 0xe8edf1, roughness: 0.99, metalness: 0, opacity: 0.98,
   });
-  addExteriorBox3d(view, width * 0.14, 0.6, 0.06, center.x, 0.18, frontFeatureZ - 0.06, {
-    color: glassColor, roughness: 0.99, metalness: 0, opacity: 0.88,
+  addExteriorBox3d(view, entranceWidth + 0.6, 0.18, 0.46, center.x, 0.96, frontFeatureZ + 0.12, {
+    color: signColor, roughness: 0.98, metalness: 0, opacity: 0.99,
   });
-  addExteriorBox3d(view, width * 0.145, 0.64, 0.03, center.x, 0.18, frontFeatureZ - 0.025, {
-    color: trimColor, roughness: 0.99, metalness: 0, opacity: 0.98,
+  addExteriorBox3d(view, 0.12, 0.56, 0.16, center.x - entranceWidth / 2 - 0.14, 0.38, frontFeatureZ + 0.06, {
+    color: signColor, roughness: 0.99, metalness: 0, opacity: 0.96,
   });
-  addExteriorBox3d(view, 0.03, 0.64, 0.05, center.x, 0.18, frontFeatureZ - 0.022, {
-    color: trimColor, roughness: 0.99, metalness: 0, opacity: 0.98,
+  addExteriorBox3d(view, 0.12, 0.56, 0.16, center.x + entranceWidth / 2 + 0.14, 0.38, frontFeatureZ + 0.06, {
+    color: signColor, roughness: 0.99, metalness: 0, opacity: 0.96,
+  });
+  addExteriorBox3d(view, width * 0.2, 0.11, 0.12, center.x, 1.25, frontFeatureZ + 0.03, {
+    color: darkTrimColor, roughness: 0.99, metalness: 0, opacity: 0.92,
   });
 
-  addExteriorDisk3d(view, 0.44, 0.09, center.x, 1.78, frontFeatureZ - 0.1, {
+  addExteriorDisk3d(view, 0.34, 0.08, center.x, 1.65, frontFeatureZ - 0.08, {
     color: signColor,
     roughness: 0.99,
     metalness: 0,
     opacity: 0.99,
   });
-  addExteriorDisk3d(view, 0.34, 0.1, center.x, 1.78, frontFeatureZ - 0.03, {
+  addExteriorDisk3d(view, 0.27, 0.09, center.x, 1.65, frontFeatureZ - 0.02, {
     color: 0xf6f8fb,
     roughness: 0.99,
     metalness: 0,
     opacity: 0.99,
   });
-  addExteriorBox3d(view, 0.28, 0.06, 0.06, center.x, 1.78, frontFeatureZ + 0.055, {
+  addExteriorBox3d(view, 0.22, 0.055, 0.06, center.x, 1.65, frontFeatureZ + 0.05, {
     color: signColor,
     roughness: 0.99,
     metalness: 0,
     opacity: 0.99,
   });
-  addExteriorBox3d(view, 0.06, 0.28, 0.06, center.x, 1.78, frontFeatureZ + 0.055, {
+  addExteriorBox3d(view, 0.055, 0.22, 0.06, center.x, 1.65, frontFeatureZ + 0.05, {
     color: signColor,
     roughness: 0.99,
     metalness: 0,
