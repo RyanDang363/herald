@@ -9,36 +9,36 @@ Spec ID format: `{FEATURE}-{TYPE}-{NNN}`. Feature: `DASH`. Types: `API`, `SYS`, 
 
 ## DASH — API
 
-- [ ] **DASH-API-001** — When `GET /api/state` is requested, the dashboard shall return a snapshot containing the current patients, beds, nurses, doctors, and equipment read from the configured store.
-- [ ] **DASH-API-002** — When serving any read endpoint, the dashboard shall not mutate any entity state. *(ubiquitous read-only invariant)*
-- [ ] **DASH-API-003** — When `GET /api/state` is requested, the dashboard shall include a derived summary of active patient count, occupied bed count, free nurse and doctor counts, and active alert count.
-- [ ] **DASH-API-004** — When `GET /api/events` is requested, the dashboard shall return the most recent buffered `er:events` lines (at most the buffer size N), each with `ts`, `event`, and `detail`.
+- [x] **DASH-API-001** — When `GET /api/state` is requested, the dashboard shall return a snapshot containing the current patients, beds, nurses, doctors, and equipment read from the configured store.
+- [x] **DASH-API-002** — When serving any read endpoint, the dashboard shall not mutate any entity state. *(ubiquitous read-only invariant)*
+- [x] **DASH-API-003** — When `GET /api/state` is requested, the dashboard shall include a derived summary of active patient count, occupied bed count, free nurse and doctor counts, and active alert count.
+- [x] **DASH-API-004** — When `GET /api/events` is requested, the dashboard shall return the most recent buffered `er:events` lines (at most the buffer size N), each with `ts`, `event`, and `detail`.
 
 ## DASH — System / Data Source
 
-- [ ] **DASH-SYS-001** — Where `dashboard_source` is `fixture`, the dashboard shall load `fixtures/er_state.json` into an in-memory store and serve snapshots from it.
-- [ ] **DASH-SYS-002** — Where `dashboard_source` is `redis`, the dashboard shall serve snapshots by reading entity records through the `StorageInterface` backed by Redis at `settings.redis_url`.
-- [ ] **DASH-SYS-003** — When the dashboard starts in `redis` mode, it shall subscribe to the `er:events` channel and append each received line to a ring buffer capped at N entries.
-- [ ] **DASH-SYS-004** — The dashboard shall assemble snapshots only through `StorageInterface.list_ids` and `StorageInterface.get`, never through a concrete backend directly. *(ubiquitous)*
+- [x] **DASH-SYS-001** — Where `dashboard_source` is `fixture`, the dashboard shall load `fixtures/er_state.json` into an in-memory store and serve snapshots from it.
+- [ ] **DASH-SYS-002** — Where `dashboard_source` is `redis`, the dashboard shall serve snapshots by reading entity records through the `StorageInterface` backed by Redis at `settings.redis_url`. *(get_store() path stubbed; awaits Dev 2 RedisStore)*
+- [ ] **DASH-SYS-003** — When the dashboard starts in `redis` mode, it shall subscribe to the `er:events` channel and append each received line to a ring buffer capped at N entries. *(buffer built; live pub/sub subscription not yet wired)*
+- [x] **DASH-SYS-004** — The dashboard shall assemble snapshots only through `StorageInterface.list_ids` and `StorageInterface.get`, never through a concrete backend directly. *(ubiquitous)*
 
 ## DASH — UI
 
-- [ ] **DASH-UI-001** — While the page is open, the frontend shall poll `GET /api/state` approximately every second and re-render the panels with the latest snapshot.
-- [ ] **DASH-UI-002** — When rendering beds, the frontend shall colour-code each bed by its status (`available`, `occupied`, `cleaning`) and show its occupant and specialty.
-- [ ] **DASH-UI-003** — When an oxygen equipment record's `supply_level` is below the low-oxygen threshold, the frontend shall display it as an active alert.
-- [ ] **DASH-UI-004** — While the page is open, the frontend shall poll `GET /api/events` and append new event lines to the live event log.
-- [ ] **DASH-UI-005** — When a snapshot contains no patients and no occupied beds, the frontend shall render empty-state placeholders rather than an error.
+- [x] **DASH-UI-001** — While the page is open, the frontend shall poll `GET /api/state` approximately every second and re-render the panels with the latest snapshot.
+- [x] **DASH-UI-002** — When rendering beds, the frontend shall colour-code each bed by its status (`available`, `occupied`, `cleaning`) and show its occupant and specialty.
+- [x] **DASH-UI-003** — When an oxygen equipment record's `supply_level` is below the low-oxygen threshold, the frontend shall display it as an active alert.
+- [x] **DASH-UI-004** — While the page is open, the frontend shall poll `GET /api/events` and append new event lines to the live event log.
+- [x] **DASH-UI-005** — When a snapshot contains no patients and no occupied beds, the frontend shall render empty-state placeholders rather than an error.
 
 ## DASH — Error Handling
 
-- [ ] **DASH-ERR-001** — If the Redis source is unavailable, then the dashboard shall return the last successful snapshot when one exists, otherwise respond `503`, and shall not crash.
-- [ ] **DASH-ERR-002** — If the Redis source is unavailable, then the frontend shall display a non-blocking "data source unavailable" banner and continue polling.
-- [ ] **DASH-ERR-003** — If an entity record is missing an optional field, then the dashboard shall render a default placeholder for it without raising an error.
+- [x] **DASH-ERR-001** — If the Redis source is unavailable, then the dashboard shall return the last successful snapshot when one exists, otherwise respond `503`, and shall not crash.
+- [x] **DASH-ERR-002** — If the Redis source is unavailable, then the frontend shall display a non-blocking "data source unavailable" banner and continue polling.
+- [x] **DASH-ERR-003** — If an entity record is missing an optional field, then the dashboard shall render a default placeholder for it without raising an error.
 
 ## DASH — Input (deferred — read-only baseline)
 
 - [D] **DASH-IN-001** — Where `dashboard_allow_input` is enabled, when `POST /api/command` is received, the dashboard shall forward the phrase to the OrchestratorAgent via `send_command`.
-- [D] **DASH-IN-002** — If `POST /api/command` is received while `dashboard_allow_input` is disabled, then the dashboard shall respond `403` and shall not change any state.
+- [x] **DASH-IN-002** — If `POST /api/command` is received while `dashboard_allow_input` is disabled, then the dashboard shall respond `403` and shall not change any state.
 
 ---
 
