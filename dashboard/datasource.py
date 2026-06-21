@@ -7,6 +7,7 @@ The same `snapshot()` works for fixture mode and Redis mode; only which `Storage
 """
 
 import json
+import time
 from collections import deque
 from pathlib import Path
 
@@ -120,7 +121,33 @@ _FIXTURE_EVENTS = [
 def build_event_buffer(maxlen: int = 50) -> EventBuffer:
     """Event buffer; seeded with fixture events when not in Redis mode."""
     buf = EventBuffer(maxlen=maxlen)
-    if settings.dashboard_source != "redis":
+    if settings.dashboard_source not in ("redis", "sim"):
         for ev in _FIXTURE_EVENTS:
             buf.add(ev)
     return buf
+
+
+_fixture_buffer: EventBuffer | None = None
+
+
+def live_snapshot() -> dict:
+    """Snapshot for the current source — fixture, redis, or the scripted sim. @spec DASH-SIM-001"""
+    if settings.dashboard_source == "sim":
+        from .sim import controller
+
+        state, _ = controller.state_and_events(time.monotonic())
+        return state
+    return snapshot(get_store())
+
+
+def current_events() -> list[dict]:
+    """Event lines for the current source. @spec DASH-SIM-002, DASH-API-004"""
+    global _fixture_buffer
+    if settings.dashboard_source == "sim":
+        from .sim import controller
+
+        _, events = controller.state_and_events(time.monotonic())
+        return events
+    if _fixture_buffer is None:
+        _fixture_buffer = build_event_buffer()
+    return _fixture_buffer.recent()

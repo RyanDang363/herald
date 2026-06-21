@@ -148,3 +148,21 @@ def test_derive_summary_tolerates_partial_records():
 def test_fixture_is_default_source():
     # Guards the read-only baseline assumption used by the tests above. @spec DASH-SYS-001
     assert datasource.settings.dashboard_source == "fixture"
+
+
+# @spec DASH-SIM-001, DASH-SIM-002 — scripted timeline evolves and emits agent-attributed events
+def test_sim_timeline_evolves_and_attributes_agents():
+    from dashboard.sim import SimController
+
+    c = SimController()
+    s0, e0 = c.state_and_events(1000.0)  # elapsed 0 — baseline
+    beds0 = {b["id"]: b for b in s0["beds"]}
+    assert beds0["bed2"]["status"] == "available"
+
+    s1, e1 = c.state_and_events(1000.0 + 14)  # past the bed-assign step at t+13s
+    beds1 = {b["id"]: b for b in s1["beds"]}
+    assert beds1["bed2"]["status"] == "occupied"
+    assert beds1["bed2"]["occupied_by"] == "p3"
+
+    assert len(e1) > len(e0)
+    assert {"from", "to", "event", "detail"} <= set(e1[0])

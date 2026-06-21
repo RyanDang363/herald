@@ -74,7 +74,9 @@ The swap is choosing which store `get_store()` returns — nothing else changes.
 
 ### Event line shape (`er:events`)
 The Orchestrator publishes one JSON line per event to the `er:events` channel ([core LLD §4](er-twin-core.lld.md)).
-Agreed shape: `{"ts": ISO-8601 str, "event": str, "detail": str}`. The dashboard is a consumer only.
+Agreed shape: `{"ts": str, "event": str, "detail": str, "from": str, "to": str}` — `from`/`to` name the
+sending and receiving agents so the event log (and agent visualizer) can show the coordination chain.
+The dashboard is a consumer only. *(Requested of Dev 1: include `from`/`to` on published lines.)*
 
 ---
 
@@ -184,6 +186,28 @@ story without claiming to satisfy it.
 | Decision | Chosen | Alternative | Why |
 |---|---|---|---|
 | Auth model | Session cookie + hardcoded creds | OAuth/IdP, JWT | Smallest thing that gates access for a 24h demo; no external dependency |
+
+## 10. Demo simulation & live feedback (UX)
+
+### Simulation source (`dashboard_source = "sim"`)
+[sim.py](../../dashboard/sim.py) provides a third data source: a **scripted, time-based timeline**
+([sim.py](../../dashboard/sim.py) `TIMELINE`) that plays the intake → triage → bed → staff →
+oxygen-alert → dispatch → summary story and **loops** every `LOOP_SECONDS`. State at any moment is
+the fixture BASE with each elapsed step's patch merged; events accumulate with `from`/`to` agent
+names. It needs no Bureau, so the whole live-feedback / agent-visualizer / floor-map UX is buildable
+and demoable standalone. `datasource.live_snapshot()` and `current_events()` select sim / fixture /
+redis transparently — the server and frontend are mode-agnostic.
+
+### Live feedback (frontend)
+The poll loop diffs each snapshot against the previous one and reacts:
+- **Change-flash** — a card whose serialized record changed flashes; a newly appearing entity
+  animates in (`enter`).
+- **Toasts** — a new patient, or an oxygen record crossing below the low threshold, raises a
+  transient toast.
+- **Heartbeat** — a live dot pulses on each successful poll; the stale banner shows on failure.
+
+All diff state is client-side (`prev` map, `seenPatients`/`alerting` sets); first load is suppressed
+so the initial paint doesn't toast everything.
 
 ---
 

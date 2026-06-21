@@ -19,7 +19,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from er_twin.config import settings
 
-from .datasource import build_event_buffer, derive_summary, get_store, snapshot
+from .datasource import current_events, derive_summary, live_snapshot
 
 _STATIC = Path(__file__).parent / "static"
 
@@ -27,7 +27,6 @@ app = FastAPI(title="ER Twin — Admin Dashboard")
 app.add_middleware(SessionMiddleware, secret_key=settings.dashboard_secret_key)
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")
 
-_events = build_event_buffer(maxlen=50)
 _last_good: dict | None = None
 
 
@@ -86,7 +85,7 @@ def api_state(user: str = Depends(require_api)) -> JSONResponse:
     """Full read-only snapshot + derived KPIs. Falls back to last-good if the source is down."""
     global _last_good
     try:
-        snap = snapshot(get_store())
+        snap = live_snapshot()
     except Exception:  # noqa: BLE001 — source unavailable must never crash the server
         if _last_good is not None:
             return JSONResponse({**_last_good, "stale": True})
@@ -104,7 +103,7 @@ def api_state(user: str = Depends(require_api)) -> JSONResponse:
 
 @app.get("/api/events")
 def api_events(user: str = Depends(require_api)) -> JSONResponse:
-    return JSONResponse({"events": _events.recent()})
+    return JSONResponse({"events": current_events()})
 
 
 @app.post("/api/command")

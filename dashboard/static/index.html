@@ -11,6 +11,7 @@
     <h1>AgentER — Live Floor</h1>
     <div class="meta">
       <span id="banner" class="banner hidden">data source unavailable — showing last known state</span>
+      <span id="live-dot" class="live-dot" title="live"></span>
       <span id="updated" class="updated">—</span>
       <a class="logout" href="/logout">Sign out</a>
     </div>
@@ -51,6 +52,8 @@
     <input id="command-input" type="text" placeholder="Type a command for the orchestrator…" />
     <button id="command-send">Send</button>
   </footer>
+
+  <div id="toasts" class="toasts"></div>
 
   <script src="/static/app.js"></script>
 </body>

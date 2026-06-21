@@ -28,6 +28,14 @@ Spec ID format: `{FEATURE}-{TYPE}-{NNN}`. Feature: `DASH`. Types: `API`, `SYS`, 
 - [x] **DASH-UI-003** — When an oxygen equipment record's `supply_level` is below the low-oxygen threshold, the frontend shall display it as an active alert.
 - [x] **DASH-UI-004** — While the page is open, the frontend shall poll `GET /api/events` and append new event lines to the live event log.
 - [x] **DASH-UI-005** — When a snapshot contains no patients and no occupied beds, the frontend shall render empty-state placeholders rather than an error.
+- [x] **DASH-UI-006** — When an entity's values change between polls, the frontend shall briefly highlight that entity's card (and animate a newly appearing entity's entrance). *(change-flash / enter)*
+- [x] **DASH-UI-007** — When a new patient appears or an oxygen record crosses below the low threshold between polls, the frontend shall show a transient toast notification.
+- [x] **DASH-UI-008** — While polling succeeds, the frontend shall pulse a live heartbeat indicator on each successful update.
+
+## DASH — Simulation (demo timeline)
+
+- [x] **DASH-SIM-001** — Where `dashboard_source` is `sim`, the dashboard shall serve snapshots from a scripted timeline that evolves over elapsed time and loops.
+- [x] **DASH-SIM-002** — Where `dashboard_source` is `sim`, the dashboard shall emit event lines carrying `from` and `to` agent names so the event log and (future) agent visualizer can show the coordination chain.
 
 ## DASH — Error Handling
 
