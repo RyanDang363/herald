@@ -37,7 +37,7 @@ def find_available_nurse(store: StorageInterface) -> str | None:
     return None
 
 
-def assign_nurse(store: StorageInterface, nurse_id: str, patient_id: str) -> bool:
+def assign_nurse(store: StorageInterface, nurse_id: str, patient_id: str, bed_id: str | None = None) -> bool:
     """Assign a nurse to a patient; the nurse goes unavailable (single-patient capacity).
 
     @spec INTAKE-FLOW-008 — set unavailable, add the patient to assignments, return accepted.
@@ -51,7 +51,10 @@ def assign_nurse(store: StorageInterface, nurse_id: str, patient_id: str) -> boo
         return True
     if not rec.get("available"):
         return False
-    store.update(nurse_key(nurse_id), {"available": False, "assignments": assignments + [patient_id]})
+    updates: dict = {"available": False, "assignments": assignments + [patient_id]}
+    if bed_id:
+        updates["location"] = bed_id
+    store.update(nurse_key(nurse_id), updates)
     return True
 
 
@@ -70,10 +73,36 @@ def dispatch_nurse(store: StorageInterface, nurse_id: str, bed_id: str) -> bool:
         return True
     store.update(
         nurse_key(nurse_id),
-        {"available": False, "location": f"bed-{bed_id.removeprefix('bed')}",
+        {"available": False, "location": bed_id,
          "assignments": assignments + [task]},
     )
     return True
+
+
+def release_nurse(store: StorageInterface, nurse_id: str, patient_id: str) -> None:
+    """Release a nurse from a patient assignment and return them to triage when free."""
+    rec = store.get(nurse_key(nurse_id))
+    if not rec:
+        return
+    from er_twin.agents import patient as patient_mod
+
+    prec = store.get(patient_mod.patient_key(patient_id))
+    bed_id = prec.get("assigned_bed") if prec else None
+    cleaned: list[str] = []
+    for a in rec.get("assignments", []):
+        if a == patient_id:
+            continue
+        if bed_id and a == f"oxygen_dispatch:{bed_id}":
+            continue
+        cleaned.append(a)
+    store.update(
+        nurse_key(nurse_id),
+        {
+            "assignments": cleaned,
+            "available": len(cleaned) < NURSE_CAPACITY,
+            "location": "triage" if not cleaned else rec.get("location", "triage"),
+        },
+    )
 
 
 def build_agents(store: StorageInterface) -> list[Agent]:

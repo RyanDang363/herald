@@ -44,7 +44,7 @@ def find_available_doctor(store: StorageInterface, specialty: str | None = None)
     return available[0] if available else None
 
 
-def assign_doctor(store: StorageInterface, doctor_id: str, patient_id: str) -> bool:
+def assign_doctor(store: StorageInterface, doctor_id: str, patient_id: str, bed_id: str | None = None) -> bool:
     """Page a doctor: increment load, add the patient; goes unavailable only at the load cap.
 
     @spec INTAKE-FLOW-011 — increment load, add the patient to assignments, return accepted.
@@ -59,11 +59,33 @@ def assign_doctor(store: StorageInterface, doctor_id: str, patient_id: str) -> b
     if rec.get("load", 0) >= DOCTOR_LOAD_CAP:
         return False
     load = rec.get("load", 0) + 1
+    updates: dict = {
+        "load": load,
+        "assignments": assignments + [patient_id],
+        "available": load < DOCTOR_LOAD_CAP,
+    }
+    if bed_id:
+        updates["location"] = bed_id
+    store.update(doctor_key(doctor_id), updates)
+    return True
+
+
+def release_doctor(store: StorageInterface, doctor_id: str, patient_id: str) -> None:
+    """Remove a patient from a doctor's assignments and decrement load."""
+    rec = store.get(doctor_key(doctor_id))
+    if not rec:
+        return
+    assignments = [a for a in rec.get("assignments", []) if a != patient_id]
+    load = max(0, rec.get("load", 0) - (1 if patient_id in rec.get("assignments", []) else 0))
     store.update(
         doctor_key(doctor_id),
-        {"load": load, "assignments": assignments + [patient_id], "available": load < DOCTOR_LOAD_CAP},
+        {
+            "assignments": assignments,
+            "load": load,
+            "available": load < DOCTOR_LOAD_CAP,
+            "location": "triage" if not assignments else rec.get("location", "triage"),
+        },
     )
-    return True
 
 
 def build_agents(store: StorageInterface) -> list[Agent]:

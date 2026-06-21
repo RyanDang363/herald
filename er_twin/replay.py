@@ -37,10 +37,13 @@ LATEST_BRIEF_FILENAME = "incident_replay_brief.json"
 PROMPT_FILENAME = "pika_prompt.md"
 
 # event key (as carried on each er:events line) -> incident_type (decision R2-H / REPLAY-BRIEF-004).
+# Also driven by EVENT_REGISTRY; kept here as the replay module's canonical map.
 INCIDENT_TYPES: dict[str, str] = {
     "intake": "patient_intake",
     "oxygen": "low_oxygen_alert",
     "summary": "er_status_summary",
+    "discharge": "patient_discharge",
+    "resolve": "event_resolved",
 }
 
 # Constant cinematic style per incident_type (decision R2-H).
@@ -48,6 +51,8 @@ VISUAL_STYLE: dict[str, str] = {
     "patient_intake": "clean cinematic ER intake and triage replay, realistic hospital operations",
     "low_oxygen_alert": "urgent but non-graphic hospital operations replay showing rapid oxygen response",
     "er_status_summary": "clean hospital command-center status visualization",
+    "patient_discharge": "calm, resolved ER discharge sequence",
+    "event_resolved": "clean hospital operations closure",
 }
 
 PIKA_OUTPUTS_REQUESTED: list[str] = [
@@ -100,6 +105,7 @@ _ACTOR_BY_ACTION: dict[str, str] = {
     "nurse_dispatched": "nurse", "oxygen_swap_complete": "orchestrator",
     "oxygen_event_complete": "orchestrator", "no_replacement_unit_available": "equipment",
     "no_dispatch_nurse_available": "nurse", "summary_generated": "orchestrator",
+    "event_resolved": "admin", "doctor_assigned": "doctor", "discharge_complete": "orchestrator",
 }
 
 

@@ -181,4 +181,39 @@ Confirmed domain constraints (DK1–DK3). Enforced by the relevant agents and as
 
 ---
 
+---
+
+## EVREG — Event Registry (implemented)
+
+- [x] **EVREG-FLOW-001** — When the Orchestrator resolves a chat intent, it shall dispatch via `EVENT_REGISTRY[intent].dispatch()` rather than hardcoded branches.
+- [x] **EVREG-FLOW-002** — Each registry entry shall declare `keywords`, `mock_reply`, `incident_type`, and `visual_style`.
+
+## INTAKE-MRN — MRN-Driven Interactive Intake
+
+- [x] **INTAKE-MRN-001** — When an intake intent is resolved, the Orchestrator shall require a patient MRN and re-prompt until one is provided.
+- [x] **INTAKE-MRN-002** — When an MRN is provided, the system shall load name/history from the EHR master via `build_live_record`.
+- [x] **INTAKE-MRN-003** — When vitals are absent from chat, the system shall synthesize deterministic vitals per MRN.
+
+## ASSIGN — Propose / Confirm Staff & Bed
+
+- [x] **ASSIGN-FLOW-001** — After triage, the Orchestrator shall propose doctor (if ESI ≤ 2), nurse, and bed without committing assignments.
+- [x] **ASSIGN-FLOW-002** — Assignments shall commit only after the admin replies `confirm` or an `assign ...` override.
+- [x] **ASSIGN-STATE-001** — On commit, nurse/doctor `location` shall be set to the assigned bed for dashboard movement.
+
+## DISCHARGE — Patient Outtake
+
+- [x] **DISCHARGE-FLOW-001** — Discharge shall be keyed on MRN with re-prompt when missing.
+- [x] **DISCHARGE-FLOW-002** — After MRN lookup, the Orchestrator shall propose discharge sign-off staff (care team recommended, plus available alternatives) as a `pending_approval` current event; discharge commits only on `confirm` or `assign ...` override (chat or dashboard).
+- [x] **DISCHARGE-STATE-001** — On resolve of a discharge current event, bed/nurse/doctor resources shall be released.
+- [x] **DISCHARGE-STATE-002** — On confirm, the patient shall be marked `discharged` and sign-off staff recorded; bed and care team remain occupied until resolve.
+
+## RESOLVE — Current Events Lifecycle
+
+- [x] **RESOLVE-FLOW-001** — Handled intake/oxygen/discharge events shall create a current event in `er:active_event:{id}` until resolved.
+- [x] **RESOLVE-FLOW-002** — Resolving (chat or dashboard) shall archive a line to `er:events` and mark the current event resolved.
+
+## SUMM — never-logged (amendment)
+
+- [x] **SUMM-STATE-002** — The summary intent shall not write to `er:active_event:*` or emit replay artifacts.
+
 *Next phase after approval: implementation plan in `docs/plans/`.*

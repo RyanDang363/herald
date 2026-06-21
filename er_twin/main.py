@@ -75,14 +75,16 @@ def seed_baseline(store: StorageInterface) -> None:
     """
     store.set("er:counter:patient", {"value": 2})
     store.set("er:patient:p1", {
-        "id": "p1", "name": "Sam Rivera", "chief_complaint": "observation after minor fall",
+        "id": "p1", "mrn": "MRN-0001", "name": "Sam Rivera",
+        "chief_complaint": "observation after minor fall",
         "acuity": 4, "specialty": "general", "status": "in_triage",
         "vitals": {"heart_rate": 84, "blood_pressure": "128/78", "resp_rate": 16,
                    "spo2": 98, "temperature_f": 98.4, "pain_score": 3},
         "assigned_bed": None, "care_team": [],
     })
     store.set("er:patient:p2", {
-        "id": "p2", "name": "Avery Chen", "chief_complaint": "shortness of breath",
+        "id": "p2", "mrn": "MRN-0002", "name": "Avery Chen",
+        "chief_complaint": "shortness of breath",
         "acuity": 3, "specialty": "general", "status": "in_treatment",
         "vitals": {"heart_rate": 104, "blood_pressure": "136/84", "resp_rate": 24,
                    "spo2": 92, "temperature_f": 99.1, "pain_score": 4},

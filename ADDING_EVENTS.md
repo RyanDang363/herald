@@ -241,8 +241,7 @@ already holds through multi-message lifecycles. A `PendingProposal` dataclass an
 
 ## Proposed Event Registry Pattern
 
-To avoid touching 8 places every time, here is a registry-based design that would consolidate
-each event into a self-contained class:
+**Status: implemented.** The registry lives in `er_twin/events/` with `EventHandler` subclasses registered in `EVENT_REGISTRY`. `_dispatch_command` delegates to the registry; adding a new event is one handler file + one registry entry.
 
 ### The interface
 

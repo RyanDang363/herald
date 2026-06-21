@@ -79,14 +79,19 @@
         </section>
       </div>
 
-      <section class="panel wide">
+      <section class="panel wide events-panel">
         <div class="panel-topline">
           <div>
-            <p class="section-kicker">Trace</p>
-            <h2>Event Log</h2>
+            <p class="section-kicker">Operations</p>
+            <h2>Events</h2>
+          </div>
+          <div class="event-tabs" role="tablist">
+            <button id="tab-current" class="event-tab active" type="button" role="tab" aria-selected="true">Current Events</button>
+            <button id="tab-log" class="event-tab" type="button" role="tab" aria-selected="false">Event Log</button>
           </div>
         </div>
-        <ul id="events" class="events"></ul>
+        <ul id="active-events" class="events active-events-list"></ul>
+        <ul id="events" class="events event-log-list hidden"></ul>
       </section>
     </main>
 

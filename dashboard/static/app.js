@@ -1667,7 +1667,7 @@ function renderEquipment(equipment, patients = []) {
 
 function renderEvents(events) {
   const root = $("events");
-  if (!events.length) return root.replaceChildren(el("li", "empty", "No events yet."));
+  if (!events.length) return root.replaceChildren(el("li", "empty", "No archived events yet."));
   root.replaceChildren(
     ...[...events].reverse().map((ev) => {
       const li = el("li", `event event-${ev.event}`);
@@ -1680,6 +1680,198 @@ function renderEvents(events) {
       return li;
     })
   );
+}
+
+// Persists chip selections across poll re-renders: { eventId -> { bed_id, nurse_id, doctor_id } }
+const _proposalSelections = new Map();
+// Last stringified active_events payload — skip re-render when unchanged
+let _lastActiveEventsJson = "";
+
+function buildProposalCard(ev) {
+  const card = el("li", "event event-proposal");
+  const isDischarge = ev.type === "discharge_proposal";
+
+  // Header
+  const header = el("div", "proposal-header");
+  const badge = el(
+    "span",
+    "proposal-badge",
+    isDischarge ? "⚡ PENDING DISCHARGE" : "⚡ PENDING ASSIGNMENT"
+  );
+  const title = el("span", "proposal-title", `${ev.name || "Patient"} · ${ev.mrn || ""}`);
+  const sub = el(
+    "span",
+    "proposal-sub",
+    isDischarge
+      ? `${ev.bed_id || "waiting"} · ready for discharge`
+      : `ESI-${ev.acuity ?? "?"} · ${ev.specialty || "general"}`
+  );
+  header.append(badge, title, sub);
+
+  const available = ev.available || {};
+  const proposed = ev.proposed || {};
+
+  // Restore prior selections or fall back to server-recommended defaults
+  const saved = _proposalSelections.get(ev.id) || {};
+  const selections = {
+    bed_id: saved.bed_id ?? proposed.bed_id ?? null,
+    nurse_id: saved.nurse_id ?? proposed.nurse_id ?? null,
+    doctor_id: saved.doctor_id ?? proposed.doctor_id ?? null,
+  };
+
+  function chipGroup(label, items, field, displayFn) {
+    if (!items || !items.length) return null;
+    const row = el("div", "chip-row");
+    const lbl = el("span", "chip-label", label);
+    row.append(lbl);
+    items.forEach((item) => {
+      const chip = el("button", "chip", displayFn(item));
+      chip.type = "button";
+      const isRec = item.id === selections[field];
+      if (isRec) { chip.classList.add("chip-selected"); chip.title = "recommended"; }
+      chip.onclick = () => {
+        row.querySelectorAll(".chip").forEach((c) => c.classList.remove("chip-selected"));
+        chip.classList.add("chip-selected");
+        selections[field] = item.id;
+        _proposalSelections.set(ev.id, { ...selections });
+      };
+      row.append(chip);
+    });
+    return row;
+  }
+
+  const body = el("div", "proposal-body");
+
+  const bedRow = chipGroup(
+    "Bed",
+    available.beds || [],
+    "bed_id",
+    (b) => `${b.id} (${b.specialty})`
+  );
+  if (bedRow) body.append(bedRow);
+
+  const nurseRow = chipGroup(
+    "Nurse",
+    available.nurses || [],
+    "nurse_id",
+    (n) => {
+      const tag = n.tag ? ` (${n.tag})` : "";
+      return `${n.name || n.id}${tag}`;
+    }
+  );
+  if (nurseRow) body.append(nurseRow);
+
+  const docRow = chipGroup(
+    "Doctor",
+    available.doctors || [],
+    "doctor_id",
+    (d) => {
+      const tag = d.tag ? ` (${d.tag})` : "";
+      const spec = d.specialty ? ` · ${d.specialty}` : "";
+      return `${d.name || d.id}${spec}${tag}`;
+    }
+  );
+  if (docRow) body.append(docRow);
+
+  const confirmLabel = isDischarge ? "Confirm Discharge" : "Confirm Assignment";
+  const footer = el("div", "proposal-footer");
+  const confirmBtn = el("button", "confirm-btn", confirmLabel);
+  confirmBtn.type = "button";
+  confirmBtn.onclick = async () => {
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = isDischarge ? "Confirming discharge…" : "Confirming…";
+    const payload = isDischarge
+      ? { nurse_id: selections.nurse_id, doctor_id: selections.doctor_id }
+      : selections;
+    try {
+      const r = await fetch(`/api/active_events/${encodeURIComponent(ev.id)}/confirm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || `confirm failed: ${r.status}`);
+      }
+      const data = await r.json();
+      _proposalSelections.delete(ev.id);
+      _lastActiveEventsJson = ""; // force re-render so card disappears
+      showToast({
+        kind: isDischarge ? "discharge" : "intake",
+        msg: data.summary || `${confirmLabel} for ${ev.name}`,
+      });
+      tick();
+    } catch (err) {
+      showToast({ kind: "alert", msg: String(err.message || err) });
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = confirmLabel;
+    }
+  };
+  footer.append(confirmBtn);
+  card.append(header, body, footer);
+  return card;
+}
+
+function buildActiveEventRow(ev) {
+  const li = el("li", `event event-active event-${ev.type || "event"}`);
+  const btn = el("button", "resolve-btn", "Resolve");
+  btn.type = "button";
+  btn.onclick = async () => {
+    try {
+      const r = await fetch(`/api/active_events/${encodeURIComponent(ev.id)}/resolve`, { method: "POST" });
+      if (!r.ok) throw new Error(`resolve failed: ${r.status}`);
+      showToast({ kind: "intake", msg: `Resolved ${ev.id}` });
+      tick();
+    } catch (err) {
+      showToast({ kind: "alert", msg: String(err.message || err) });
+    }
+  };
+  li.append(
+    el("span", "event-ts", ev.id || ""),
+    el("span", "event-chain", ev.type || "event"),
+    el("span", "event-detail", ev.summary || ""),
+    btn
+  );
+  return li;
+}
+
+function renderActiveEvents(activeEvents) {
+  // Skip re-render entirely when data is identical — prevents flicker and preserves chip state.
+  const json = JSON.stringify(activeEvents);
+  if (json === _lastActiveEventsJson) return;
+  _lastActiveEventsJson = json;
+
+  const root = $("active-events");
+  if (!activeEvents.length) return root.replaceChildren(el("li", "empty", "No current events."));
+  root.replaceChildren(
+    ...activeEvents.map((ev) =>
+      ev.status === "pending_approval" ? buildProposalCard(ev) : buildActiveEventRow(ev)
+    )
+  );
+}
+
+function setupEventTabs() {
+  const tabCurrent = $("tab-current");
+  const tabLog = $("tab-log");
+  const listCurrent = $("active-events");
+  const listLog = $("events");
+  if (!tabCurrent || !tabLog) return;
+  tabCurrent.onclick = () => {
+    tabCurrent.classList.add("active");
+    tabLog.classList.remove("active");
+    tabCurrent.setAttribute("aria-selected", "true");
+    tabLog.setAttribute("aria-selected", "false");
+    listCurrent.classList.remove("hidden");
+    listLog.classList.add("hidden");
+  };
+  tabLog.onclick = () => {
+    tabLog.classList.add("active");
+    tabCurrent.classList.remove("active");
+    tabLog.setAttribute("aria-selected", "true");
+    tabCurrent.setAttribute("aria-selected", "false");
+    listLog.classList.remove("hidden");
+    listCurrent.classList.add("hidden");
+  };
 }
 
 // --- Poll loop ---------------------------------------------------------------
@@ -1706,8 +1898,12 @@ async function tick() {
     $("banner").classList.remove("hidden");
   }
   try {
-    const { events } = await getJSON("/api/events");
+    const [{ events }, { active_events: activeEvents }] = await Promise.all([
+      getJSON("/api/events"),
+      getJSON("/api/active_events"),
+    ]);
     renderEvents(events || []);
+    renderActiveEvents(activeEvents || []);
   } catch (e) {
     /* keep last log on error */
   }
@@ -1719,5 +1915,6 @@ document.addEventListener("keydown", (event) => {
 $("detail-close").onclick = closeDetail;
 $("detail-backdrop").onclick = closeDetail;
 
+setupEventTabs();
 tick();
 setInterval(tick, POLL_MS);

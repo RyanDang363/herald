@@ -27,7 +27,7 @@ import logging
 import re
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -41,18 +41,21 @@ from uagents_core.contrib.protocols.chat import (
 )
 
 from er_twin import replay
-from er_twin.addresses import STUB_ADDRESS, address_for, seed_for
-from er_twin.agents import admissions, bed, doctor, equipment, nurse, patient, triage
+from er_twin.addresses import seed_for
+from er_twin.agents import admissions, bed, doctor, nurse, patient, triage
 from er_twin.config import settings
+from er_twin.display import display
+from er_twin.events.base import DispatchContext, PendingCommand as EventPendingCommand, PendingProposal
+from er_twin.events.registry import EVENT_REGISTRY, all_keywords, mock_replies
 from er_twin.memory import MemoryInterface, NoopMemory
+from er_twin.oxygen_coord import (
+    cleanup_oxygen,
+)
+from er_twin.oxygen_flow import OxygenFlow
 from er_twin.protocols import (
-    EquipmentLocateRequest,
     EquipmentLocateResponse,
     LowSupplyAlert,
-    PingRequest,
     PingResponse,
-    SimulateOxygenDropRequest,
-    StaffDispatchRequest,
     StaffDispatchResponse,
 )
 from er_twin.storage import StorageInterface
@@ -64,34 +67,20 @@ _logger = logging.getLogger(__name__)
 
 # --- Intent resolution (USE_MOCK hardcoded lookup, ORCH-LLM-003) ---
 
-# Each intent maps to the substrings that identify it in inbound chat text. Phrases come from the
-# shared USE_MOCK contract in docs/TEAM.md — keep them in sync.
-# Order matters: more specific event phrases are matched before the bare "ping" token (so e.g.
-# "dropping" never trips the ping path). Matching is whole-word (word-boundary) — see resolve_intent.
-_INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "intake": ("chest pain", "new patient arrived"),
-    "oxygen": ("oxygen is dropping", "oxygen"),
-    "summary": ("what's happening in the er", "show me what", "status summary"),
-    "ping": ("ping",),
-}
+# Each intent maps to trigger substrings (driven by EVENT_REGISTRY).
+_INTENT_KEYWORDS: dict[str, tuple[str, ...]] = all_keywords()
 
 # No-store fallback replies, referenced by the intake/oxygen/summary branches only when no shared store
 # is wired (never in normal operation — main.py always injects one). The real replies are now state-
 # derived; the summary string here is illustrative-only (decision R2-F) and never the shipped answer.
 # `ping` is intentionally absent: it always round-trips through the stub (ORCH-SKEL-001), so its
 # reply is the stub's live PingResponse text, never a canned string.
-MOCK_REPLIES: dict[str, str] = {
-    "intake": (
-        "Admitted Jordan Lee (chest pain). Triage ESI-2. "
-        "Assigned bed-1 + nurse-1; paged Dr. Smith (cardiology)."
-    ),
-    "oxygen": "Low O2 on bed-3 (88%). Dispatched nurse-2 with replacement unit o2-2. ETA ~15s.",
-    "summary": "3 patients active, 2 beds occupied, 1 nurse free. No critical alerts.",
-}
+MOCK_REPLIES: dict[str, str] = mock_replies()
 
 CLARIFICATION = (
-    "I'm not sure what you'd like me to do. Try: 'A new patient arrived with chest pain', "
-    "'Bed 3's patient oxygen is dropping', or 'Show me what's happening in the ER'."
+    "I'm not sure what you'd like me to do. Try: 'patient intake MRN-0005', "
+    "'Bed 3's patient oxygen is dropping', 'discharge patient MRN-0002', "
+    "'resolve evt-0001', or 'Show me what's happening in the ER'."
 )
 
 # USE_MOCK intake payloads keyed by trigger phrase (decision Gap 2) — the chat text only carries the
@@ -106,19 +95,6 @@ MOCK_INTAKE: dict[str, dict] = {
         },
     },
 }
-
-# Presentation-only id → friendly name map for chat (decision Gap 7); ids stay in state. Newly
-# admitted patients use their intake name directly.
-DISPLAY_NAMES: dict[str, str] = {
-    "nurse1": "Nurse Maya", "nurse2": "Nurse Chen",
-    "doc1": "Dr. Smith", "doc2": "Dr. Patel",
-    "bed1": "bed-1", "bed2": "bed-2", "bed3": "bed-3", "bed4": "bed-4",
-    "o2_1": "oxygen unit o2-1", "o2_2": "replacement unit o2-2",
-}
-
-
-def display(entity_id: str | None) -> str:
-    return DISPLAY_NAMES.get(entity_id, entity_id) if entity_id else ""
 
 
 def resolve_intent(text: str) -> str:
@@ -141,9 +117,11 @@ _ASIONE_TIMEOUT_SECONDS = 8.0
 _INTENT_SYSTEM_PROMPT = (
     "You classify a hospital ER operator's chat message into exactly one intent token. "
     "Reply with ONLY one lowercase word, no punctuation or explanation:\n"
-    "- intake  : a new patient is arriving/has arrived or needs admission or triage\n"
-    "- oxygen  : a patient's oxygen/SpO2 is dropping, or an oxygen unit is low/failing\n"
-    "- summary : a request for ER status, an overview, or what's currently happening\n"
+    "- intake   : a new patient is arriving/has arrived or needs admission or triage\n"
+    "- oxygen   : a patient's oxygen/SpO2 is dropping, or an oxygen unit is low/failing\n"
+    "- discharge: a patient is ready to leave or be discharged (outtake)\n"
+    "- resolve  : close/resolve a current event (e.g. resolve evt-0001)\n"
+    "- summary  : a request for ER status, an overview, or what's currently happening\n"
     "- ping    : a connectivity or liveness test\n"
     "- unknown : anything that fits none of the above"
 )
@@ -385,141 +363,6 @@ def run_intake(
     return result
 
 
-# --- Low-oxygen coordination (Event 2, OXY-*) ---
-#
-# Unlike intake, Event 2 is realized as REAL async uAgent messaging (the mandatory Fetch.ai showcase —
-# decision 2026-06-20-intake-orchestration-mode): the EquipmentAgent autonomously emits `LowSupplyAlert`
-# and the Orchestrator handles alert → locate → dispatch → swap across separate `@on_message` handlers
-# (below), correlating the multi-hop flow by a `flow_id` threaded through every oxygen message and keyed
-# in `oxygen_flows` (so overlapping/autonomous alerts never clobber each other and late/duplicate
-# responses are no-ops — LLD §6). The functions here are the pure logic those handlers call; they
-# unit-test against an `InMemoryStore`.
-
-
-def should_start_o2_dispatch(in_flight: dict[str, str], equipment_id: str) -> bool:
-    """True unless a dispatch is already in flight for this unit (decision R2-D).
-
-    @spec OXY-IDEM-001 — a `LowSupplyAlert` for an equipment id already mid-dispatch is ignored.
-    """
-    return equipment_id not in in_flight
-
-
-def apply_oxygen_swap(
-    store: StorageInterface, depleted_id: str, replacement_id: str, bed_id: str, nurse_id: str
-) -> str | None:
-    """Apply the full cross-entity oxygen swap on an accepted dispatch (decision R2-C).
-
-    @spec OXY-FLOW-005 — composes the equipment/bed/patient swap (`equipment.swap_oxygen_unit`) with
-    the nurse move (`nurse.dispatch_nurse`). Returns the affected patient id.
-    """
-    occupant = equipment.swap_oxygen_unit(store, depleted_id, replacement_id, bed_id)
-    nurse.dispatch_nurse(store, nurse_id, bed_id)
-    return occupant
-
-
-def format_oxygen_confirmation(bed_id: str, replacement_id: str, nurse_id: str) -> str:
-    """Chat confirmation naming the bed, replacement unit, and dispatched nurse (OXY-FLOW-006)."""
-    return (
-        f"Low O2 on {display(bed_id)} resolved: dispatched {display(nurse_id)} with "
-        f"{display(replacement_id)}; patient SpO2 restored to 96%."
-    )
-
-
-def _bed_from_text(text: str) -> str:
-    """Resolve the target bed from the chat trigger; defaults to bed-3 for the scripted demo."""
-    match = re.search(r"bed\s*(\d+)", text.lower())
-    return f"bed{match.group(1)}" if match else "bed3"
-
-
-# --- Status summary (Event 3, SUMM-*) ---
-#
-# Read-only and synchronous (LLD §7 / decision R2-F): unlike the other two events, the summary does NOT
-# message any agent and does NOT mutate state — the Orchestrator reads the shared store directly and
-# renders a deterministic, state-derived template. Real ASI:One synthesis is the optional LLM path
-# (gated like intent resolution, SUMM-FLOW-002); USE_MOCK uses this template. `build_status_summary`
-# is a pure function over a `StorageInterface`, unit-tested directly; the chat branch is a thin wrapper.
-
-# Patient statuses that count as "active" in the summary (everything but discharged — decision R2-F).
-_ACTIVE_PATIENT_STATUSES = {"waiting", "in_triage", "admitted", "in_treatment"}
-
-
-def _plural(n: int, singular: str, plural: str) -> str:
-    return singular if n == 1 else plural
-
-
-def _active_patients(store: StorageInterface) -> list[dict]:
-    """Patient records in a non-discharged (active) status (SUMM-FLOW-001)."""
-    records = [store.get(patient.patient_key(pid)) for pid in store.list_ids("patient")]
-    return [r for r in records if r.get("status") in _ACTIVE_PATIENT_STATUSES]
-
-
-def build_status_summary(store: StorageInterface, active_o2_alert_beds: list[str]) -> str:
-    """Render the deterministic, store-derived ER status summary (decision R2-F).
-
-    Pure + read-only (SUMM-STATE-001): reads patients/beds/nurses via the store and returns a string,
-    never mutating state. `active_o2_alert_beds` is the list of beds with an in-flight oxygen dispatch,
-    computed by the caller from `oxygen_flows`/`in_flight_o2_dispatches` (see the summary chat branch),
-    so this stays a pure function the unit tests exercise by injecting a list.
-
-    @spec SUMM-FLOW-001 @spec SUMM-FLOW-002 @spec SUMM-ERR-001 @spec SUMM-STATE-001
-    """
-    active = _active_patients(store)
-    occupied_beds = [
-        bid for bid in store.list_ids("bed")
-        if store.get(bed.bed_key(bid)).get("status") == "occupied"
-    ]
-    free_nurses = sum(
-        1 for nid in store.list_ids("nurse")
-        if store.get(nurse.nurse_key(nid)).get("available") is True
-    )
-
-    # @spec SUMM-ERR-001 — quiet ER: report calm, not an error.
-    if not active and not occupied_beds:
-        return (
-            "Nothing currently happening in the ER — no active patients, "
-            "no occupied beds, and no critical alerts."
-        )
-
-    n_pat, n_bed = len(active), len(occupied_beds)
-    counts = (
-        f"{n_pat} {_plural(n_pat, 'patient', 'patients')} active, "
-        f"{n_bed} {_plural(n_bed, 'bed', 'beds')} occupied, "
-        f"{free_nurses} {_plural(free_nurses, 'nurse', 'nurse(s)')} free."
-    )
-
-    # @spec SUMM-FLOW-002 — add an alert line when O2 dispatches are in flight, and a "Most urgent"
-    # line when any active patient is acuity <= 2; the "No critical alerts." all-clear shows only when
-    # neither applies (reconciliation in decision R2-F).
-    tail: list[str] = []
-    if active_o2_alert_beds:
-        n_alerts = len(active_o2_alert_beds)
-        beds_named = ", ".join(display(b) for b in active_o2_alert_beds)
-        tail.append(f"{n_alerts} active O2 alert{_plural(n_alerts, '', 's')} on {beds_named}.")
-    urgent = [p for p in active if isinstance(p.get("acuity"), int) and p["acuity"] <= 2]
-    if urgent:
-        top = min(urgent, key=lambda p: (p["acuity"], p.get("id", "")))
-        tail.append(f"Most urgent: {top.get('name', top.get('id'))} (ESI-{top['acuity']}).")
-    if not tail:
-        tail.append("No critical alerts.")
-
-    return f"{counts} {' '.join(tail)}"
-
-
-def compose_summary(
-    store: StorageInterface, active_o2_alert_beds: list[str], recalled: list[str]
-) -> str:
-    """Render the status summary, appending a recalled-context line when memory returned facts.
-
-    @spec MEM-FLOW-002 — the summary intent queries long-term memory and folds the recalled prior
-    events into its output. Under `NoopMemory` (USE_MOCK / no Iris) `recalled` is empty, so this is
-    byte-identical to `build_status_summary` — the deterministic template path is unchanged.
-    """
-    summary = build_status_summary(store, active_o2_alert_beds)
-    if recalled:
-        summary = f"{summary} Recent context: " + "; ".join(recalled) + "."
-    return summary
-
-
 # --- Async correlation & serialization primitives ---
 
 
@@ -587,44 +430,18 @@ class CommandGate:
         return self._queue.popleft()
 
 
-@dataclass
-class OxygenFlow:
-    """Per-flow context for the multi-hop oxygen event, keyed by `flow_id` in `oxygen_flows`.
-
-    `chat_sender` is set when the flow was triggered by a chat command (so it occupies the command
-    gate); an autonomous alert leaves it None and runs ungated. `status` advances
-    started → locating → dispatching → done; a response for a flow that is gone or already `done` is a
-    no-op (LLD §6)."""
-
-    flow_id: str
-    bed_id: str
-    alert_equipment_id: str
-    session_id: str | None = None
-    chat_sender: str | None = None
-    replacement_id: str | None = None
-    nurse_id: str | None = None
-    status: str = "started"
-    # Replay milestone lines accumulated for THIS flow (published to er:events + exported on terminal).
-    lines: list[dict] = field(default_factory=list)
-
-
 # --- Agent + chat protocol wiring ---
 
 orchestrator = Agent(
     name="ER Twin Orchestrator",
-    # seed is UNCHANGED — the address + already-connected Agentverse mailbox are derived from it and
-    # must stay stable. handle/name/description below are profile metadata only (independent of the seed).
     seed=seed_for(ORCHESTRATOR_AGENT_ID),
     mailbox=True,
     publish_agent_details=True,
     network="testnet",
-    # Public @handle on Agentverse. NOTE: in uagents 0.25.2 this only reaches Agentverse via the
-    # Inspector /connect flow (register_in_agentverse), NOT on a plain restart — the canonical handle
-    # is currently set on the Agentverse profile UI. Kept here in sync for when /connect re-runs.
     handle="er-herald",
     description=(
         "Autonomous digital twin of a hospital emergency room, built on Fetch.ai uAgents. "
-        "Chat to drive it: \"A new patient arrived with chest pain\", "
+        "Chat to drive it: \"patient intake MRN-0005\", "
         "\"Bed 3's patient oxygen is dropping\", or \"Show me what's happening in the ER\". "
         "Synthetic demo data only — no real patient health information."
     ),
@@ -642,8 +459,9 @@ _pending_ping_sessions: list[tuple[str, str]] = []  # (flow_id, session_id)
 in_flight_o2_dispatches: dict[str, str] = {}
 # Per-flow oxygen context keyed by flow_id (LLD §6) — overlapping/autonomous alerts never collide.
 oxygen_flows: dict[str, OxygenFlow] = {}
+session_pending: dict[str, PendingProposal] = {}
 
-# Monotonic per-run correlation id source (no wall-clock / randomness — deterministic demo).
+# Monotonic per-run correlation id source
 _flow_counter = 0
 # A command whose terminal reply never arrives must not wedge the gate; release it after this long.
 COMMAND_TIMEOUT_SECONDS = 30
@@ -767,13 +585,6 @@ def _emit_replay(ctx: Context, event: str, lines: list[dict]) -> str | None:
         return None
 
 
-def _replay_note(incident_id: str | None) -> str:
-    """Chat suffix pointing at the captured in-browser replay (text only; no Pika call in-process).
-
-    @spec REPLAY-FRAME-001 — the link opens the data-driven `/replay/{incident}` reconstruction.
-    """
-    return f" Replay captured → /replay/{incident_id}" if incident_id else ""
-
 
 def _new_flow_id(kind: str) -> str:
     """Mint a deterministic per-run flow id (e.g. ``chat-3``) for a command or alert flow."""
@@ -843,7 +654,17 @@ async def _begin_command(ctx: Context, cmd: PendingChatCommand) -> None:
     _command_gate.start(flow_id)
     asyncio.create_task(_watchdog(ctx, flow_id))
     try:
-        completed = await _dispatch_command(ctx, cmd, flow_id)
+        from er_twin.events.base import PendingProposal
+
+        pending = session_pending.get(cmd.session_id)
+        if isinstance(pending, PendingProposal):
+            handler = EVENT_REGISTRY.get(pending.event_type)
+            if handler is not None:
+                completed = await handler.resume(_make_dctx(ctx, cmd, flow_id), pending)
+            else:
+                completed = await _dispatch_command(ctx, cmd, flow_id)
+        else:
+            completed = await _dispatch_command(ctx, cmd, flow_id)
     except Exception as exc:  # noqa: BLE001 — never let a command crash the Orchestrator.
         ctx.logger.exception("command dispatch failed")
         await _send_chat(ctx, cmd.sender, f"Sorry — I hit an error handling that: {exc}")
@@ -852,99 +673,44 @@ async def _begin_command(ctx: Context, cmd: PendingChatCommand) -> None:
         await _complete_command(ctx, flow_id)
 
 
+def _make_dctx(ctx: Context, cmd: PendingChatCommand, flow_id: str) -> DispatchContext:
+    """Build the shared dispatch context passed to event handlers."""
+    ep = EventPendingCommand(sender=cmd.sender, session_id=cmd.session_id, text=cmd.text, flow_id=flow_id)
+    return DispatchContext(
+        ctx=ctx,
+        cmd=ep,
+        store=_store,
+        replay=_replay,
+        memory=_memory,
+        session_pending=session_pending,
+        oxygen_flows=oxygen_flows,
+        in_flight_o2_dispatches=in_flight_o2_dispatches,
+        session_senders=_session_senders,
+        pending_ping_sessions=_pending_ping_sessions,
+        send_chat=_send_chat,
+        log_milestone=_log_milestone,
+        record_milestone=_record_milestone,
+        emit_replay=_emit_replay,
+        record_memory=_record_memory,
+        recall_memory=_recall_memory,
+        new_flow_id=_new_flow_id,
+        complete_command=_complete_command,
+    )
+
+
 async def _dispatch_command(ctx: Context, cmd: PendingChatCommand, flow_id: str) -> bool:
-    """Resolve intent and start the flow. Return True if it finished synchronously (gate frees now),
-    False if it is an async flow that frees the gate later from its terminal `@on_message` handler."""
-    # Run intent resolution off the event loop: under USE_MOCK it's a trivial sync lookup, but the live
-    # ASI:One path (_resolve_via_llm) is a blocking HTTP call that would otherwise stall the whole Bureau.
+    """Resolve intent and dispatch via EVENT_REGISTRY."""
     intent = await asyncio.to_thread(resolve_command, cmd.text)
     ctx.logger.info(f"chat[{cmd.session_id[:8]}] flow={flow_id} resolved intent={intent!r}")
 
-    if intent == "ping":
-        # @spec ORCH-SKEL-001 — dispatch in-process to the stub; reply arrives in on_pong.
-        _session_senders.remember(cmd.session_id, cmd.sender)
-        _pending_ping_sessions.append((flow_id, cmd.session_id))
-        await ctx.send(STUB_ADDRESS, PingRequest(text=cmd.text))
-        return False
-
-    if intent == "intake":
-        # @spec INTAKE-FLOW-001 — run the intake flow over the shared store, relay confirmation.
-        data = lookup_mock_intake(cmd.text) or {"name": "Unknown Patient", "chief_complaint": cmd.text, "vitals": {}}
-        if _store is None:
-            await _send_chat(ctx, cmd.sender, MOCK_REPLIES["intake"])  # no store wired; safe fallback
-            return True
-        # @spec EHR-FLOW-001 — carry any MRN named in the chat so the AdmissionsAgent loads its history.
-        mrn = extract_mrn(cmd.text)
-        # @spec REPLAY-LOG-001 @spec REPLAY-SNAP-001 — capture each milestone live, as its step mutates
-        # the store, so the snapshot timeline shows real intermediate states (not just the final one).
-        lines: list[dict] = []
-
-        def _capture_intake(action: str, target: str | None, detail: dict) -> None:
-            _record_milestone(lines, _store, "intake", replay.actor_for(action), action, target, **detail)
-
-        outcome = run_intake(
-            _store, data["name"], data["chief_complaint"], data["vitals"], mrn,
-            on_milestone=_capture_intake,
-        )
-        ctx.logger.info(f"intake -> {outcome['patient_id']} status={outcome['status']} error={outcome['error']}")
-        incident_id = _emit_replay(ctx, "intake", lines)
-        # @spec MEM-FLOW-001 — record the intake outcome to agent memory (non-fatal).
-        _record_memory(ctx, outcome["confirmation"])
-        await _send_chat(ctx, cmd.sender, outcome["confirmation"] + _replay_note(incident_id))
+    handler = EVENT_REGISTRY.get(intent)
+    if handler is None:
+        await _send_chat(ctx, cmd.sender, CLARIFICATION)
         return True
-
-    if intent == "oxygen":
-        # @spec OXY-FLOW-007 — kick off the real async flow: ask the bed's oxygen unit to drop.
-        # The reply arrives later via on_low_supply → on_locate → on_dispatch, not inline here.
-        if _store is None:
-            await _send_chat(ctx, cmd.sender, MOCK_REPLIES["oxygen"])  # no store wired; safe fallback
-            return True
-        bed_id = _bed_from_text(cmd.text)
-        eid = equipment.oxygen_unit_at_bed(_store, bed_id)
-        if eid is None:
-            await _send_chat(ctx, cmd.sender, f"No oxygen unit found at {display(bed_id)}.")
-            return True
-        _session_senders.remember(cmd.session_id, cmd.sender)
-        flow = OxygenFlow(
-            flow_id=flow_id, bed_id=bed_id, alert_equipment_id=eid,
-            session_id=cmd.session_id, chat_sender=cmd.sender,
-        )
-        oxygen_flows[flow_id] = flow
-        # @spec REPLAY-LOG-001 — first oxygen milestone; the rest accrue across the async handlers.
-        _record_milestone(flow.lines, _store, "oxygen", "orchestrator", "oxygen_drop_simulated", eid, bed=bed_id)
-        await ctx.send(
-            address_for(eid),
-            SimulateOxygenDropRequest(flow_id=flow_id, bed_id=bed_id, equipment_id=eid),
-        )
-        return False
-
-    if intent == "summary":
-        # @spec SUMM-FLOW-001/002 — read-only, store-derived summary (R2-F); synchronous, no mutation.
-        if _store is None:
-            await _send_chat(ctx, cmd.sender, MOCK_REPLIES["summary"])  # no store wired; safe fallback
-            return True
-        # The in-flight O2-alert beds live on the flows keyed by equipment_id -> flow_id (post-Phase-4
-        # hardening). In normal gated demo operation this is empty (the gate serializes a chat-triggered
-        # dispatch ahead of the summary); a non-empty list only arises from an autonomous alert mid-flight.
-        alert_beds = [
-            oxygen_flows[fid].bed_id
-            for fid in in_flight_o2_dispatches.values()
-            if fid in oxygen_flows
-        ]
-        # @spec MEM-FLOW-002 — recall prior events first and fold them into the summary (empty under Noop).
-        recalled = _recall_memory("recent ER patients, admissions, and alerts")
-        summary = compose_summary(_store, alert_beds, recalled)
-        # @spec REPLAY-LOG-001 — one `summary_generated` milestone, then export the brief.
-        line = _log_milestone(_store, "summary", "orchestrator", "summary_generated", None, text=summary)
-        incident_id = _emit_replay(ctx, "summary", [line] if line is not None else [])
-        # @spec MEM-FLOW-001 — record the generated summary as a session event (non-fatal).
-        _record_memory(ctx, summary)
-        await _send_chat(ctx, cmd.sender, summary + _replay_note(incident_id))
+    if _store is None and handler.mock_reply:
+        await _send_chat(ctx, cmd.sender, handler.mock_reply)
         return True
-
-    # @spec ORCH-LLM-004 — unknown intent: clarify, dispatch nothing.
-    await _send_chat(ctx, cmd.sender, CLARIFICATION)
-    return True
+    return await handler.dispatch(_make_dctx(ctx, cmd, flow_id))
 
 
 async def _complete_command(ctx: Context, flow_id: str) -> None:
@@ -998,136 +764,29 @@ async def on_pong(ctx: Context, sender: str, msg: PingResponse):
 
 
 def _cleanup_oxygen(flow_id: str) -> None:
-    """Drop a flow's context + its in-flight + chat-session bookkeeping (idempotent)."""
-    flow = oxygen_flows.pop(flow_id, None)
-    if flow is not None:
-        in_flight_o2_dispatches.pop(flow.alert_equipment_id, None)
-        if flow.session_id:
-            _session_senders.forget(flow.session_id)
+    cleanup_oxygen(flow_id, oxygen_flows, in_flight_o2_dispatches, _session_senders)
 
 
 async def _finish_oxygen(ctx: Context, flow_id: str, reply: str) -> None:
-    """Emit the terminal oxygen reply, clean up the flow, and release the command gate if it was a
-    chat-triggered (gated) flow. Autonomous-alert flows have no gate to release."""
-    flow = oxygen_flows.get(flow_id)
-    gated = bool(flow and flow.chat_sender)
-    incident_id: str | None = None
-    if flow is not None and _store is not None:
-        # @spec REPLAY-LOG-001 — terminal success milestone, then export the incident's brief.
-        if flow.status == "done":
-            _record_milestone(flow.lines, _store, "oxygen", "orchestrator", "oxygen_event_complete", flow.bed_id)
-        incident_id = _emit_replay(ctx, "oxygen", flow.lines)
-    # @spec MEM-FLOW-001 — record the oxygen-event outcome to agent memory (non-fatal).
-    _record_memory(ctx, reply)
-    if flow and flow.chat_sender:
-        await _send_chat(ctx, flow.chat_sender, reply + _replay_note(incident_id))
-    else:
-        ctx.logger.info(f"oxygen (no chat session): {reply}")
-    _cleanup_oxygen(flow_id)
-    if gated:
-        await _complete_command(ctx, flow_id)
+    """Legacy terminal path — delegated to OxygenHandler._finish via registry."""
+    handler = EVENT_REGISTRY["oxygen"]
+    dctx = _make_dctx(ctx, PendingChatCommand(sender="", session_id="", text=""), flow_id)
+    await handler._finish(dctx, flow_id, reply)  # noqa: SLF001
 
 
 @orchestrator.on_message(LowSupplyAlert)
 async def on_low_supply(ctx: Context, sender: str, msg: LowSupplyAlert):
-    # @spec OXY-FLOW-001 — the EquipmentAgent's autonomous push lands here.
-    eid = msg.equipment_id
-    # @spec OXY-IDEM-001 — ignore an alert for a unit already mid-dispatch (decision R2-D).
-    if not should_start_o2_dispatch(in_flight_o2_dispatches, eid):
-        ctx.logger.info(f"duplicate_alert_ignored: O2 dispatch already in progress for {eid}")
-        return
-
-    flow = oxygen_flows.get(msg.flow_id) if msg.flow_id else None
-    if flow is None:
-        # Autonomous alert (no chat trigger): mint an ungated flow and locate its bed from state.
-        bed_id = equipment.bed_for_equipment(_store, eid)
-        if bed_id is None:
-            ctx.logger.warning(f"LowSupplyAlert for {eid} with no locatable bed; ignoring")
-            return
-        flow = OxygenFlow(flow_id=msg.flow_id or _new_flow_id("oxygen-auto"), bed_id=bed_id, alert_equipment_id=eid)
-        oxygen_flows[flow.flow_id] = flow
-    flow.alert_equipment_id = eid
-    in_flight_o2_dispatches[eid] = flow.flow_id
-    flow.status = "locating"
-    ctx.logger.info(f"alert_raised: {eid} low ({msg.supply_level}%) at {flow.bed_id} -> locating (flow={flow.flow_id})")
-    # @spec REPLAY-LOG-001 — autonomous alert milestone.
-    _record_milestone(flow.lines, _store, "oxygen", "equipment", "alert_raised", eid, supply_level=msg.supply_level, bed=flow.bed_id)
-
-    # @spec OXY-FLOW-002 — select a same-type replacement (decision R2-E sort).
-    replacement = equipment.locate_replacement(_store, msg.type, exclude_id=eid)
-    flow.replacement_id = replacement
-    if replacement is None:
-        # @spec OXY-ERR-001 — no qualifying unit: report and do not dispatch anything.
-        _record_milestone(flow.lines, _store, "oxygen", "equipment", "no_replacement_unit_available", eid, bed=flow.bed_id)
-        await _finish_oxygen(ctx, flow.flow_id, f"Low O2 on {display(flow.bed_id)}: no available replacement unit nearby.")
-        return
-    await ctx.send(
-        address_for(replacement),
-        EquipmentLocateRequest(type=msg.type, near_location=msg.location, flow_id=flow.flow_id),
-    )
+    await EVENT_REGISTRY["oxygen"].on_low_supply(_make_dctx(ctx, PendingChatCommand(sender=sender, session_id="", text=""), msg.flow_id or ""), msg)
 
 
 @orchestrator.on_message(EquipmentLocateResponse)
 async def on_locate(ctx: Context, sender: str, msg: EquipmentLocateResponse):
-    # @spec OXY-FLOW-003 — the candidate unit confirmed (or declined) availability.
-    flow = oxygen_flows.get(msg.flow_id)
-    if flow is None or flow.status == "done":
-        ctx.logger.info(f"stale/duplicate locate response ignored (flow={msg.flow_id})")
-        return
-    if not msg.available or msg.equipment_id is None:
-        # @spec OXY-ERR-001 — candidate no longer available.
-        await _finish_oxygen(ctx, flow.flow_id, f"Low O2 on {display(flow.bed_id)}: no available replacement unit nearby.")
-        return
-    flow.replacement_id = msg.equipment_id
-    flow.status = "dispatching"
-    ctx.logger.info(f"unit_located: {msg.equipment_id} at {msg.location} -> dispatching nurse (flow={flow.flow_id})")
-    # @spec REPLAY-LOG-001 — replacement located.
-    _record_milestone(flow.lines, _store, "oxygen", "equipment", "unit_located", msg.equipment_id, location=msg.location, bed=flow.bed_id)
-
-    # @spec OXY-FLOW-004 — dispatch an available nurse to bring the unit.
-    nurse_id = nurse.find_available_nurse(_store)
-    if nurse_id is None:
-        _record_milestone(flow.lines, _store, "oxygen", "nurse", "no_dispatch_nurse_available", flow.bed_id)
-        await _finish_oxygen(
-            ctx, flow.flow_id,
-            f"Replacement {display(msg.equipment_id)} located for {display(flow.bed_id)}, "
-            f"but no nurse is available to dispatch.",
-        )
-        return
-    flow.nurse_id = nurse_id
-    await ctx.send(
-        address_for(nurse_id),
-        StaffDispatchRequest(
-            task="deliver_oxygen", target_location=msg.location,
-            equipment_id=msg.equipment_id, flow_id=flow.flow_id,
-        ),
-    )
+    await EVENT_REGISTRY["oxygen"].on_locate(_make_dctx(ctx, PendingChatCommand(sender=sender, session_id="", text=""), msg.flow_id), msg)
 
 
 @orchestrator.on_message(StaffDispatchResponse)
 async def on_dispatch(ctx: Context, sender: str, msg: StaffDispatchResponse):
-    # @spec OXY-FLOW-005 — the nurse accepted; apply the swap and confirm to chat.
-    flow = oxygen_flows.get(msg.flow_id)
-    if flow is None or flow.status == "done":
-        ctx.logger.info(f"stale/duplicate dispatch response ignored (flow={msg.flow_id})")
-        return
-    nurse_id = flow.nurse_id or msg.staff_id
-    if not msg.accepted:
-        _record_milestone(flow.lines, _store, "oxygen", "nurse", "no_dispatch_nurse_available", flow.bed_id, nurse=nurse_id)
-        await _finish_oxygen(ctx, flow.flow_id, f"{display(nurse_id)} declined the oxygen dispatch for {display(flow.bed_id)}.")
-        return
-    flow.status = "done"  # mark before mutating so a duplicate response is a no-op
-    # @spec REPLAY-LOG-001 — nurse accepts, then the cross-entity swap completes.
-    _record_milestone(flow.lines, _store, "oxygen", "nurse", "nurse_dispatched", nurse_id, bed=flow.bed_id, equipment=flow.replacement_id)
-    apply_oxygen_swap(_store, flow.alert_equipment_id, flow.replacement_id, flow.bed_id, nurse_id)
-    _record_milestone(flow.lines, _store, "oxygen", "orchestrator", "oxygen_swap_complete", flow.bed_id,
-                      depleted=flow.alert_equipment_id, replacement=flow.replacement_id, nurse=nurse_id)
-    ctx.logger.info(
-        f"oxygen_swap_complete: {flow.alert_equipment_id}->{flow.replacement_id} at {flow.bed_id} "
-        f"via {nurse_id} (flow={flow.flow_id})"
-    )
-    # @spec OXY-FLOW-006 — confirm to the chat user (clear-on-completion, decision R2-D).
-    await _finish_oxygen(ctx, flow.flow_id, format_oxygen_confirmation(flow.bed_id, flow.replacement_id, nurse_id))
+    await EVENT_REGISTRY["oxygen"].on_dispatch(_make_dctx(ctx, PendingChatCommand(sender=sender, session_id="", text=""), msg.flow_id), msg)
 
 
 orchestrator.include(chat, publish_manifest=True)

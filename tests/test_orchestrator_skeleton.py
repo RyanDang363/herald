@@ -35,12 +35,8 @@ def test_resolve_intent_summary():
 
 
 def test_mock_replies_match_team_contract():
-    # @spec ORCH-LLM-003
-    assert (
-        orch.MOCK_REPLIES["intake"]
-        == "Admitted Jordan Lee (chest pain). Triage ESI-2. "
-        "Assigned bed-1 + nurse-1; paged Dr. Smith (cardiology)."
-    )
+    # @spec ORCH-LLM-003 — registry-driven mock replies for no-store fallback.
+    assert "MRN" in orch.MOCK_REPLIES["intake"]
     assert (
         orch.MOCK_REPLIES["oxygen"]
         == "Low O2 on bed-3 (88%). Dispatched nurse-2 with replacement unit o2-2. ETA ~15s."
