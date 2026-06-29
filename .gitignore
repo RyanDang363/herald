@@ -1,5 +1,4 @@
 # Agent / AI tooling
-# .agents/ is committed so teammates/judges get the Pika skills on clone
 .claude/
 .cursor/
 
@@ -34,3 +33,13 @@ npm-debug.log*
 # OS files
 .DS_Store
 Thumbs.db
+
+# Internal / hackathon docs — production deploy only needs README.md
+**/*.md
+!/README.md
+
+# Reference libraries, specs, and agent skills (local dev only)
+.agents/
+docs/
+fetch-ai-documentation/
+redis-documentation/
