@@ -1,4 +1,0 @@
-- Using Redis Beyond Caching: leveraging our AI tools like Redis Iris for Agent memory, vector search, context retrieval
-- Creativity and originality: solving real human problems in ways we haven't seen before, has a fun factor
-- Technical Implementation: Quality and sophistication of the engineering, Correctness, scalability, and architecture
-- See "Best Use of Redis Prize + Resources - UC Berkeley AI Hackathon.pdf"
