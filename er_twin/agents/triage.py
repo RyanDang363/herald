@@ -47,5 +47,34 @@ def triage(store: StorageInterface, patient_id: str) -> tuple[int, str]:
 
 
 def build_agents(store: StorageInterface) -> list[Agent]:
-    """The TriageAgent. The `TriageRequest` handler (Phase 3 wiring) calls `triage`."""
-    return [Agent(name="er-triage", seed=seed_for(TRIAGE_AGENT_ID), network="testnet")]
+    """Create the TriageAgent, wired with the TriageRequest handler.
+
+    @spec INTAKE-FLOW-004 — on TriageRequest: run assess+persist and reply with TriageResponse.
+    """
+    from uagents import Context
+
+    from er_twin.addresses import ORCHESTRATOR_ADDRESS
+    from er_twin.protocols import TriageRequest, TriageResponse
+
+    agent = Agent(name="er-triage", seed=seed_for(TRIAGE_AGENT_ID), network="testnet")
+
+    @agent.on_message(TriageRequest)
+    async def on_triage(ctx: Context, sender: str, msg: TriageRequest) -> None:
+        try:
+            acuity, specialty = triage(store, msg.patient_id)
+        except ValueError as exc:
+            ctx.logger.warning(f"triage refused for {msg.patient_id}: {exc}")
+            # Use the pure assess() fallback so the flow doesn't stall
+            acuity, specialty = assess(msg.chief_complaint)
+        ctx.logger.info(f"triage: {msg.patient_id} acuity={acuity} specialty={specialty!r}")
+        await ctx.send(
+            ORCHESTRATOR_ADDRESS,
+            TriageResponse(
+                patient_id=msg.patient_id,
+                acuity=acuity,
+                specialty=specialty,
+                flow_id=msg.flow_id,
+            ),
+        )
+
+    return [agent]

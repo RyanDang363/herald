@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from er_twin import active_events, replay
+from er_twin import active_events
 from er_twin.display import display
 from er_twin.events.base import DispatchContext, EventHandler, PendingProposal
 from er_twin.events.helpers import (
@@ -15,7 +15,8 @@ from er_twin.events.helpers import (
     parse_assignment_override,
     synthesize_vitals,
 )
-from er_twin.events.intake_flow import commit_full_intake, plan_intake_proposal
+from er_twin.events.intake_flow import plan_intake_proposal
+from er_twin.intake_flow import IntakeFlow
 
 
 class IntakeHandler(EventHandler):
@@ -240,77 +241,26 @@ class IntakeHandler(EventHandler):
                 )
                 return True
         dctx.session_pending.pop(pending.session_id, None)
-        lines: list[dict] = []
 
-        def capture(action, target, detail):
-            dctx.record_milestone(
-                lines,
-                store,
-                "intake",
-                replay.actor_for(action),
-                action,
-                target,
-                **detail,
-            )
+        # Record the sender so the terminal _finish_intake can route the reply back.
+        dctx.session_senders.remember(dctx.cmd.session_id, pending.sender)
 
-        dctx.record_milestone(
-            lines, store, "intake", "orchestrator", "intake_received", None, mrn=pending.mrn
+        # Build the IntakeFlow correlation object and kick off the async pipeline.
+        from er_twin.agents.orchestrator import _start_intake_flow
+
+        flow = IntakeFlow(
+            flow_id=dctx.cmd.flow_id,
+            chat_sender=pending.sender,
+            session_id=dctx.cmd.session_id,
+            name=pending.name,
+            chief_complaint=pending.chief_complaint,
+            vitals=pending.vitals or {},
+            mrn=pending.mrn or "",
+            preferred_bed_id=proposed.get("bed_id"),
+            preferred_nurse_id=proposed.get("nurse_id"),
+            preferred_doctor_id=proposed.get("doctor_id"),
+            active_event_id=pending.active_event_id or "",
         )
-        # Patient record is created here for the first time (deferred from plan phase).
-        outcome = commit_full_intake(
-            store,
-            pending.name,
-            pending.chief_complaint,
-            pending.vitals,
-            pending.mrn,
-            proposed.get("bed_id"),
-            proposed.get("nurse_id"),
-            proposed.get("doctor_id"),
-            on_milestone=capture,
-        )
-        if outcome.get("error") in ("duplicate", "patient_capacity_reached"):
-            await dctx.send_chat(dctx.ctx, pending.sender, outcome["confirmation"])
-            return True
-
-        patient_id = outcome["patient_id"]
-        incident_id = dctx.emit_replay(dctx.ctx, "intake", lines)
-
-        # Promote the pending_approval event to active and stamp the now-known patient_id.
-        if pending.active_event_id:
-            promoted = active_events.confirm_pending_proposal(
-                store,
-                pending.active_event_id,
-                outcome["confirmation"],
-                new_type="intake",
-            )
-            if promoted:
-                from er_twin.active_events import _event_key
-
-                store.update(_event_key(pending.active_event_id), {"patient_id": patient_id})
-            evt_id = (
-                pending.active_event_id
-                if promoted
-                else active_events.create_active_event(
-                    store,
-                    "intake",
-                    outcome["confirmation"],
-                    patient_id=patient_id,
-                    incident_id=incident_id or "",
-                )
-            )
-        else:
-            evt_id = active_events.create_active_event(
-                store,
-                "intake",
-                outcome["confirmation"],
-                patient_id=patient_id,
-                incident_id=incident_id or "",
-            )
-
-        dctx.record_memory(dctx.ctx, outcome["confirmation"])
-        await dctx.send_chat(
-            dctx.ctx,
-            pending.sender,
-            f"{outcome['confirmation']}\nCurrent event {evt_id} — resolve when complete.",
-        )
-        return True
+        await _start_intake_flow(dctx.ctx, flow)
+        # The gate is released asynchronously by _finish_intake when all hops complete.
+        return False

@@ -1,4 +1,15 @@
-"""Interactive intake flow — propose (read-only) then commit on confirm."""
+"""Intake proposal planning — read-only pre-flight before confirming intake.
+
+`plan_intake_proposal` computes the recommended triage + resource assignment without writing
+any state. The actual write phase runs through real uAgent messages (PatientIntakeRequest →
+PatientBindRequest → TriageRequest → BedAssignRequest → StaffAssignRequest), orchestrated
+by `er_twin.agents.orchestrator._start_intake_flow`.
+
+The dashboard `/api/active_events/{id}/confirm` endpoint uses `commit_full_intake` (below)
+because it writes the shared store directly — it does not have a uAgent `Context` to `ctx.send`.
+Chat confirm uses the same domain functions, wrapped as agent message hops
+(`er_twin.agents.orchestrator._start_intake_flow`).
+"""
 
 from __future__ import annotations
 

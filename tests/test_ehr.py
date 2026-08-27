@@ -37,8 +37,9 @@ def _write_master(path: pathlib.Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as fh:
         json.dump(data, fh)
-    # Flush the module-level cache so each test starts clean.
+    # Flush the module-level fixture cache AND runtime-patient dict so each test starts clean.
     ehr_mod._flush_cache(path)
+    ehr_mod._clear_runtime_patients()
 
 
 _SAMPLE_EHR = {
@@ -124,35 +125,33 @@ def test_next_mrn_missing_file_returns_0001(tmp_path: pathlib.Path) -> None:
 
 
 def test_register_new_patient_writes_and_caches(tmp_path: pathlib.Path) -> None:
-    # @spec EHR-IDEM-002
+    # @spec EHR-IDEM-002 — new patient is visible in-process via get_ehr_record.
     master_file = tmp_path / "ehr_master.json"
     _write_master(master_file, _SAMPLE_EHR)
 
     register_new_patient("MRN-0003", "Alex Smith", path=master_file)
 
-    # Verify on-disk
+    # The fixture file is NOT written at runtime — new patient lives only in the runtime cache.
     with open(master_file) as fh:
         on_disk = json.load(fh)
-    assert "MRN-0003" in on_disk
+    assert "MRN-0003" not in on_disk  # fixture is read-only
 
-    # Verify cache coherence — in-process lookup must see the new entry.
+    # In-process lookup must see the new entry via the runtime cache.
     assert get_ehr_record("MRN-0003", master_file) is not None
+    assert get_ehr_record("MRN-0003", master_file)["name"] == "Alex Smith"
 
 
 def test_register_new_patient_idempotent(tmp_path: pathlib.Path) -> None:
-    # @spec EHR-IDEM-001
+    # @spec EHR-IDEM-001 — re-registering the same MRN returns the original entry.
     master_file = tmp_path / "ehr_master.json"
     _write_master(master_file, _SAMPLE_EHR)
 
     register_new_patient("MRN-0003", "Alex Smith", path=master_file)
-    register_new_patient("MRN-0003", "Alex Smith Again", path=master_file)
+    entry = register_new_patient("MRN-0003", "Alex Smith Again", path=master_file)
 
-    with open(master_file) as fh:
-        on_disk = json.load(fh)
-    # Should appear exactly once, with original name preserved.
-    mrn3_entries = [k for k in on_disk if k == "MRN-0003"]
-    assert len(mrn3_entries) == 1
-    assert on_disk["MRN-0003"]["name"] == "Alex Smith"
+    # Second call returns the first entry unchanged.
+    assert entry["name"] == "Alex Smith"
+    assert get_ehr_record("MRN-0003", master_file)["name"] == "Alex Smith"
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +198,7 @@ def test_build_live_record_new_patient_unknown_mrn(tmp_path: pathlib.Path) -> No
     assert rec["mrn"] == "MRN-9999"
     assert rec["new_patient"] is True
     assert rec["history"] == {"medications": [], "conditions": [], "allergies": []}
-    # Writeback: fixture should now contain MRN-9999
+    # Registered into the runtime cache (not written to fixture).
     assert get_ehr_record("MRN-9999", master_file) is not None
 
 

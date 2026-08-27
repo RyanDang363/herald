@@ -26,7 +26,7 @@ from er_twin.storage import StorageInterface
 
 LOW_SUPPLY_THRESHOLD = 50  # percent; oxygen below this is "low" (OXY-FLOW-001)
 
-# Demo inventory (matches the shared fixture in docs/TEAM.md); all units start free.
+# Demo inventory (matches dashboard/fixtures/er_state.json); all units start free.
 EQUIPMENT: list[dict] = [
     {"id": "o2_1", "type": "oxygen", "supply_level": 45, "in_use_by": None, "location": "storage"},
     {"id": "o2_2", "type": "oxygen", "supply_level": 88, "in_use_by": None, "location": "storage"},

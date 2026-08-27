@@ -16,7 +16,7 @@ from uagents import Agent
 from er_twin.addresses import seed_for
 from er_twin.storage import StorageInterface
 
-# Demo bed inventory (ids/specialties match the shared fixture in docs/TEAM.md).
+# Demo bed inventory (ids/specialties match dashboard/fixtures/er_state.json).
 BEDS: dict[str, str] = {
     "bed1": "cardiology",
     "bed2": "general",
@@ -104,5 +104,49 @@ def release_bed(store: StorageInterface, bed_id: str) -> None:
 
 
 def build_agents(store: StorageInterface) -> list[Agent]:
-    """Create one BedAgent per bed. Assignment handlers are added in Phase 3."""
-    return [Agent(name=f"er-{bed_id}", seed=seed_for(bed_id), network="testnet") for bed_id in BEDS]
+    """Create one BedAgent per bed, wired with BedAssignRequest and BedReleaseRequest handlers."""
+    from uagents import Context
+
+    from er_twin.addresses import ORCHESTRATOR_ADDRESS
+    from er_twin.protocols import BedAssignRequest, BedAssignResponse, BedReleaseRequest, BedReleaseResponse
+
+    agents: list[Agent] = []
+    for bed_id in BEDS:
+        agent = Agent(name=f"er-{bed_id}", seed=seed_for(bed_id), network="testnet")
+
+        def _make_handlers(this_bed_id: str):
+            async def on_assign(ctx: Context, sender: str, msg: BedAssignRequest) -> None:
+                # The Orchestrator selects this bed (read-only) and addresses the request here;
+                # this agent performs the guarded write and replies.
+                success = assign_patient_to_bed(store, msg.patient_id, this_bed_id)
+                if success:
+                    store.update(patient_key(msg.patient_id), {"status": "admitted"})
+                    ctx.logger.info(f"{this_bed_id}: assigned patient {msg.patient_id}")
+                else:
+                    ctx.logger.warning(f"{this_bed_id}: assign failed for {msg.patient_id}")
+                await ctx.send(
+                    ORCHESTRATOR_ADDRESS,
+                    BedAssignResponse(
+                        patient_id=msg.patient_id,
+                        bed_id=this_bed_id if success else None,
+                        success=success,
+                        flow_id=msg.flow_id,
+                    ),
+                )
+
+            async def on_release(ctx: Context, sender: str, msg: BedReleaseRequest) -> None:
+                """Free the bed from its occupant and reply to the Orchestrator's resolve flow."""
+                release_bed(store, this_bed_id)
+                ctx.logger.info(f"{this_bed_id}: released (resolve flow {msg.flow_id})")
+                await ctx.send(
+                    ORCHESTRATOR_ADDRESS,
+                    BedReleaseResponse(bed_id=this_bed_id, released=True, flow_id=msg.flow_id),
+                )
+
+            return on_assign, on_release
+
+        on_assign, on_release = _make_handlers(bed_id)
+        agent.on_message(BedAssignRequest)(on_assign)
+        agent.on_message(BedReleaseRequest)(on_release)
+        agents.append(agent)
+    return agents

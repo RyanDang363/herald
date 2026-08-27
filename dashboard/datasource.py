@@ -2,15 +2,21 @@
 
 @spec DASH-API-001, DASH-API-003, DASH-SYS-001, DASH-SYS-002, DASH-SYS-004
 
-The same `snapshot()` works for fixture mode and Redis mode; only which `StorageInterface`
-`get_store()` returns differs (the LLD §2 fixture↔Redis seam).
+Sources (DASHBOARD_SOURCE env var):
+  live    (default) — reads the same InMemoryStore the Bureau is running against. The store is
+                      injected at startup by main.py via set_live_store(). No extra process needed.
+  redis             — reads a RedisStore; useful when Bureau runs in a separate process with a
+                      shared Redis backend.
+  fixture           — reads a static JSON fixture; useful for standalone dashboard demos.
+
+The same `snapshot()` works for all modes; only which StorageInterface get_store() returns differs.
 """
 
 import json
-import time
 from collections import deque
 from pathlib import Path
 
+from er_twin.agents.equipment import LOW_SUPPLY_THRESHOLD as LOW_OXYGEN_THRESHOLD
 from er_twin.config import settings
 from er_twin.storage import InMemoryStore, StorageInterface
 
@@ -22,12 +28,17 @@ ENTITIES: dict[str, str] = {
     "equipment": "equipment",
 }
 
-# Dummy threshold for the read-only baseline. MUST be reconciled with the value the
-# EquipmentAgent uses for OXY-FLOW-001 before the live demo (see dashboard.lld.md §2).
-LOW_OXYGEN_THRESHOLD = 50
-
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "er_state.json"
 _fixture_store: InMemoryStore | None = None
+
+# In-process live store injected by main.py when co-hosting Bureau + dashboard.
+_live_store: StorageInterface | None = None
+
+
+def set_live_store(store: StorageInterface) -> None:
+    """Inject the shared Bureau store so the dashboard reads live state. Called from main.py."""
+    global _live_store
+    _live_store = store
 
 
 def build_fixture_store() -> InMemoryStore:
@@ -40,17 +51,27 @@ def build_fixture_store() -> InMemoryStore:
     return store
 
 
-def get_store() -> StorageInterface:
-    """Return the configured store. Fixture is cached; Redis is constructed per call."""
+def _ensure_fixture_store() -> InMemoryStore:
+    """Return (and cache) the fixture InMemoryStore."""
     global _fixture_store
+    if _fixture_store is None:
+        if _FIXTURE_PATH.exists():
+            _fixture_store = build_fixture_store()
+        else:
+            _fixture_store = InMemoryStore()
+    return _fixture_store
+
+
+def get_store() -> StorageInterface:
+    """Return the configured store for read/write operations."""
+    if settings.dashboard_source == "live":
+        # Use the injected live store when the Bureau is co-hosted; fall back to fixture otherwise.
+        return _live_store if _live_store is not None else _ensure_fixture_store()
     if settings.dashboard_source == "redis":
-        # Imported lazily: RedisStore is Dev 2's Phase 6 work and may not exist yet.
         from er_twin.storage import RedisStore  # type: ignore[attr-defined]
 
         return RedisStore(settings.redis_url)
-    if _fixture_store is None:
-        _fixture_store = build_fixture_store()
-    return _fixture_store
+    return _ensure_fixture_store()
 
 
 def snapshot(store: StorageInterface) -> dict:
@@ -118,9 +139,9 @@ _FIXTURE_EVENTS = [
 
 
 def build_event_buffer(maxlen: int = 50) -> EventBuffer:
-    """Event buffer; seeded with fixture events when not in Redis mode."""
+    """Event buffer; seeded with fixture events in fixture mode."""
     buf = EventBuffer(maxlen=maxlen)
-    if settings.dashboard_source not in ("redis", "sim"):
+    if settings.dashboard_source == "fixture":
         for ev in _FIXTURE_EVENTS:
             buf.add(ev)
     return buf
@@ -130,12 +151,7 @@ _fixture_buffer: EventBuffer | None = None
 
 
 def live_snapshot() -> dict:
-    """Snapshot for the current source — fixture, redis, or the scripted sim. @spec DASH-SIM-001"""
-    if settings.dashboard_source == "sim":
-        from .sim import controller
-
-        state, _ = controller.state_and_events(time.monotonic())
-        return state
+    """Snapshot for the current source."""
     return snapshot(get_store())
 
 
@@ -193,26 +209,34 @@ def list_active_events_store(store: StorageInterface) -> list[dict]:
 
 def active_events_list() -> list[dict]:
     """Active events for the configured dashboard source."""
-    if settings.dashboard_source == "sim":
+    try:
+        return list_active_events_store(get_store())
+    except Exception:  # noqa: BLE001
         return []
-    if settings.dashboard_source == "redis":
-        try:
-            return list_active_events_store(get_store())
-        except Exception:  # noqa: BLE001
-            return []
-    return []
 
 
 def current_events() -> list[dict]:
-    """Event lines for the current source. @spec DASH-SIM-002, DASH-API-004, DASH-SYS-003"""
+    """Event lines for the current source. @spec DASH-API-004, DASH-SYS-003"""
     global _fixture_buffer
-    if settings.dashboard_source == "sim":
-        from .sim import controller
-
-        _, events = controller.state_and_events(time.monotonic())
-        return events
     if settings.dashboard_source == "redis":
         return _redis_events()
+    if settings.dashboard_source == "live" and _live_store is not None:
+        # In live mode, read recent er:events lines directly from the in-process store.
+        return _live_events()
     if _fixture_buffer is None:
         _fixture_buffer = build_event_buffer()
     return _fixture_buffer.recent()
+
+
+def _live_events(maxlen: int = 50) -> list[dict]:
+    """Read recent er:events lines from the in-process store (InMemoryStore publish channel)."""
+    store = _live_store
+    if store is None:
+        return []
+    # InMemoryStore.publish appends to an in-memory list; read via list_events if available.
+    raw = getattr(store, "_events", [])
+    rows = []
+    for i, line in enumerate(raw[-maxlen:]):
+        if isinstance(line, dict):
+            rows.append(_event_row(str(i), line))
+    return rows

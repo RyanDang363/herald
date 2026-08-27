@@ -1,9 +1,8 @@
-"""Unit tests for the Phase 1 single-process Bureau skeleton (ORCH-* specs).
+"""Unit tests for the Orchestrator skeleton (ORCH-* specs).
 
 These exercise the *pure*, unit-testable seams of the Orchestrator — intent resolution, the mock
 lookup, LLM-error fallback, session→sender correlation, and command serialization — without booting
-a live Bureau / mailbox (that path is proven by spikes/mailbox_inside_bureau_spike.py and verified
-manually). Each test traces to an EARS spec id.
+a live Bureau / mailbox. Each test traces to an EARS spec id.
 """
 
 import pytest

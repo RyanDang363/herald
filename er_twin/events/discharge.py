@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from er_twin import active_events
+from er_twin.discharge_coord import DischargeFlow
 from er_twin.display import display
 from er_twin.events.base import DispatchContext, EventHandler, PendingProposal
-from er_twin.events.discharge_flow import commit_discharge, plan_discharge_proposal
+from er_twin.events.discharge_flow import plan_discharge_proposal
 from er_twin.events.helpers import (
     extract_mrn,
     format_discharge_proposal,
@@ -148,42 +149,26 @@ class DischargeHandler(EventHandler):
                 return True
 
         dctx.session_pending.pop(pending.session_id, None)
-        outcome = commit_discharge(
-            store,
-            pending.patient_id,
-            proposed.get("nurse_id"),
-            proposed.get("doctor_id"),
-        )
 
-        if pending.active_event_id:
-            promoted = active_events.confirm_pending_proposal(
-                store,
-                pending.active_event_id,
-                outcome["confirmation"],
-                new_type="discharge",
-            )
-            evt_id = (
-                pending.active_event_id
-                if promoted
-                else active_events.create_active_event(
-                    store,
-                    "discharge",
-                    outcome["confirmation"],
-                    patient_id=pending.patient_id,
-                )
-            )
-        else:
-            evt_id = active_events.create_active_event(
-                store,
-                "discharge",
-                outcome["confirmation"],
-                patient_id=pending.patient_id,
-            )
+        # Record the chat sender for the async flow to reply to.
+        dctx.session_senders.remember(pending.session_id, pending.sender)
 
-        dctx.record_memory(dctx.ctx, outcome["confirmation"])
-        await dctx.send_chat(
-            dctx.ctx,
-            pending.sender,
-            f"{outcome['confirmation']}\nCurrent event {evt_id} — resolve to free bed and staff.",
+        # Build the discharge flow and kick off the async agent-message pipeline.
+        from er_twin.agents.orchestrator import _start_discharge_flow
+
+        patient_rec = store.get(f"er:patient:{pending.patient_id}")
+        flow = DischargeFlow(
+            flow_id=dctx.cmd.flow_id,
+            session_id=pending.session_id,
+            chat_sender=pending.sender,
+            patient_id=pending.patient_id,
+            mrn=pending.mrn or patient_rec.get("mrn", ""),
+            name=pending.name or patient_rec.get("name", pending.patient_id),
+            bed_id=patient_rec.get("assigned_bed"),
+            nurse_id=proposed.get("nurse_id"),
+            doctor_id=proposed.get("doctor_id"),
+            active_event_id=pending.active_event_id or "",
         )
-        return True
+        await _start_discharge_flow(dctx.ctx, flow)
+        # Gate released asynchronously in _finish_discharge.
+        return False

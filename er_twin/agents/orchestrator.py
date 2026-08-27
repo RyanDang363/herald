@@ -41,9 +41,18 @@ from uagents_core.contrib.protocols.chat import (
 )
 
 from er_twin import replay
-from er_twin.addresses import seed_for
+from er_twin.addresses import (
+    ADMISSIONS_ADDRESS,
+    TRIAGE_ADDRESS,
+    bed_address,
+    doctor_address,
+    nurse_address,
+    patient_agent_address,
+    seed_for,
+)
 from er_twin.agents import admissions, bed, doctor, nurse, patient, triage
 from er_twin.config import settings
+from er_twin.discharge_coord import DischargeFlow, ResolveFlow
 from er_twin.display import display
 from er_twin.events.base import (
     DispatchContext,
@@ -51,16 +60,33 @@ from er_twin.events.base import (
     PendingProposal,
 )
 from er_twin.events.registry import EVENT_REGISTRY, all_keywords, mock_replies
+from er_twin.intake_flow import IntakeFlow
 from er_twin.memory import MemoryInterface, NoopMemory
 from er_twin.oxygen_coord import (
     cleanup_oxygen,
 )
 from er_twin.oxygen_flow import OxygenFlow
 from er_twin.protocols import (
+    BedAssignRequest,
+    BedAssignResponse,
+    BedReleaseRequest,
+    BedReleaseResponse,
     EquipmentLocateResponse,
     LowSupplyAlert,
+    PatientBindRequest,
+    PatientBindResponse as _PatientBindResponse,
+    PatientDischargeRequest,
+    PatientDischargeResponse,
+    PatientIntakeRequest,
+    PatientIntakeResponse,
     PingResponse,
+    StaffAssignRequest,
+    StaffAssignResponse,
     StaffDispatchResponse,
+    StaffReleaseRequest,
+    StaffReleaseResponse,
+    TriageRequest,
+    TriageResponse,
 )
 from er_twin.storage import StorageInterface
 
@@ -477,6 +503,12 @@ _pending_ping_sessions: list[tuple[str, str]] = []  # (flow_id, session_id)
 in_flight_o2_dispatches: dict[str, str] = {}
 # Per-flow oxygen context keyed by flow_id (LLD §6) — overlapping/autonomous alerts never collide.
 oxygen_flows: dict[str, OxygenFlow] = {}
+# Per-flow intake context keyed by flow_id — correlates multi-hop admission responses.
+intake_flows: dict[str, IntakeFlow] = {}
+# Per-flow discharge context keyed by flow_id — correlates PatientDischargeResponse.
+discharge_flows: dict[str, DischargeFlow] = {}
+# Per-flow resolve context keyed by flow_id — drains the bed/nurse/doctor release queue.
+resolve_flows: dict[str, ResolveFlow] = {}
 session_pending: dict[str, PendingProposal] = {}
 
 # Monotonic per-run correlation id source
@@ -494,7 +526,7 @@ _memory: MemoryInterface = NoopMemory()
 # Incident replay recorder (Phase R): holds the per-run `seq` + incident counters, publishes milestone
 # lines to `er:events`, and mints incident ids. Reset per process run (no wall-clock — LLD §9).
 _replay = replay.ReplayRecorder()
-# Directory the replay artifacts are written to (out/{incident_id}.json + latest brief + pika_prompt.md).
+# Directory the replay snapshot timelines are written to (out/replay/{incident_id}.json).
 REPLAY_OUT_DIR = "out"
 
 
@@ -578,24 +610,20 @@ def _record_milestone(
 
 
 def _emit_replay(ctx: Context, event: str, lines: list[dict]) -> str | None:
-    """Export an incident's replay brief + snapshot timeline; return the incident id (or None).
+    """Build the incident brief in-memory and write the snapshot timeline; return the incident id.
 
-    Best-effort: a replay-export failure must never break the live command, so it is logged and
-    swallowed. Skips entirely when no store is wired or no milestone lines were recorded
-    (REPLAY-BRIEF-003 — no empty artifacts)."""
+    Best-effort: a replay-export failure must never break the live command.
+    Skips when no store is wired or no milestone lines were recorded (REPLAY-BRIEF-003).
+    """
     if _store is None or not lines:
         return None
     try:
         incident_id = _replay.next_incident_id(event)
         incident_type = replay.INCIDENT_TYPES[event]
-        brief = replay.export_incident(
-            lines, incident_id, incident_type, _store, out_dir=REPLAY_OUT_DIR
-        )
-        if brief is None:
-            return None
-        ctx.logger.info(f"replay brief written: {incident_id} -> {REPLAY_OUT_DIR}/")
+        # Build brief in-memory for title/summary — no file written.
+        brief = replay.build_brief(lines, incident_id, incident_type, _store)
         # @spec REPLAY-SNAP-003 @spec REPLAY-LIB-001 — write the full-state snapshot timeline
-        # (with per-snapshot ts + library metadata) for the replay page and the /library.
+        # (with per-snapshot ts + library metadata) for the /replay page and /library.
         snapshots = _replay.snapshots_for(ln["seq"] for ln in lines)
         timeline = replay.export_incident_timeline(
             snapshots,
@@ -615,6 +643,465 @@ def _emit_replay(ctx: Context, event: str, lines: list[dict]) -> str | None:
     except Exception:  # noqa: BLE001 — replay export is non-critical; never crash the command.
         ctx.logger.exception("replay export failed")
         return None
+
+
+# --- Intake flow: async multi-hop orchestration ---
+#
+# The intake pipeline: Orchestrator → Admissions → PatientBind → Triage → Bed → Nurse → Doctor.
+# Each hop is an async ctx.send; responses advance the IntakeFlow state machine in @on_message handlers.
+
+
+async def _start_intake_flow(ctx: Context, flow: IntakeFlow) -> None:
+    """Kick off the intake pipeline by sending PatientIntakeRequest to the AdmissionsAgent.
+
+    @spec INTAKE-FLOW-001 — the Orchestrator starts intake by messaging Admissions.
+    """
+    intake_flows[flow.flow_id] = flow
+    store = _store
+    if store is None:
+        return
+    _record_milestone(
+        flow.lines, store, "intake", "orchestrator", "intake_received", None, mrn=flow.mrn
+    )
+    await ctx.send(
+        ADMISSIONS_ADDRESS,
+        PatientIntakeRequest(
+            name=flow.name,
+            chief_complaint=flow.chief_complaint,
+            vitals=flow.vitals,
+            mrn=flow.mrn,
+            flow_id=flow.flow_id,
+        ),
+    )
+
+
+async def _on_intake_response(ctx: Context, msg: PatientIntakeResponse) -> None:
+    """Handle AdmissionsAgent reply: if new patient, bind a PatientAgent slot.
+
+    @spec INTAKE-FLOW-002 — new record created → proceed.
+    @spec INTAKE-IDEM-001 — duplicate → short-circuit with current state.
+    """
+    flow = intake_flows.get(msg.flow_id)
+    if flow is None:
+        ctx.logger.warning(f"PatientIntakeResponse for unknown flow {msg.flow_id!r}")
+        return
+    store = _store
+    assert store is not None
+    flow.patient_id = msg.patient_id
+    if not msg.created:
+        _record_milestone(
+            flow.lines, store, "intake", "admissions", "intake_deduped", msg.patient_id
+        )
+        record = msg.record
+        text = f"{flow.name} is already in the ER ({record.get('status')})."
+        await _finish_intake(ctx, flow, text)
+        return
+    _record_milestone(
+        flow.lines, store, "intake", "admissions", "record_created", msg.patient_id
+    )
+    # Find an idle patient-agent slot (read-only) and address that agent for the bind request.
+    slot = patient.find_idle_slot(store)
+    if slot is None:
+        _record_milestone(
+            flow.lines, store, "intake", "orchestrator", "patient_capacity_reached", msg.patient_id
+        )
+        flow.error = "patient_capacity_reached"
+        text = f"{flow.name} is waiting — patient capacity reached (no free patient agent)."
+        await _finish_intake(ctx, flow, text)
+        return
+    await ctx.send(
+        patient_agent_address(slot),
+        PatientBindRequest(patient_id=msg.patient_id, record=msg.record, flow_id=msg.flow_id),
+    )
+
+
+async def _on_bind_response(ctx: Context, msg) -> None:
+    """PatientBindResponse → advance to triage.
+
+    @spec INTAKE-BIND-002 — bound: proceed to triage.
+    @spec INTAKE-BIND-003 — not bound: report capacity and stop.
+    """
+    flow = intake_flows.get(msg.flow_id)
+    if flow is None:
+        return
+    store = _store
+    assert store is not None
+    if not msg.bound:
+        flow.error = "patient_capacity_reached"
+        text = f"{flow.name} is waiting — patient agent slot busy."
+        await _finish_intake(ctx, flow, text)
+        return
+    _record_milestone(
+        flow.lines, store, "intake", "orchestrator", "patient_bound", msg.patient_id, slot=msg.agent_id
+    )
+    store.update(patient.patient_key(msg.patient_id), {"status": "in_triage"})
+    record = store.get(patient.patient_key(msg.patient_id))
+    await ctx.send(
+        TRIAGE_ADDRESS,
+        TriageRequest(
+            patient_id=msg.patient_id,
+            chief_complaint=record.get("chief_complaint", ""),
+            vitals=record.get("vitals") or {},
+            flow_id=msg.flow_id,
+        ),
+    )
+
+
+async def _on_triage_response(ctx: Context, msg: TriageResponse) -> None:
+    """TriageResponse → advance to bed assignment.
+
+    @spec INTAKE-FLOW-004 — acuity + specialty received → select and assign bed.
+    @spec INTAKE-FLOW-005 — no bed → report and stop.
+    """
+    flow = intake_flows.get(msg.flow_id)
+    if flow is None:
+        return
+    store = _store
+    assert store is not None
+    flow.acuity = msg.acuity
+    flow.specialty = msg.specialty
+    _record_milestone(
+        flow.lines, store, "intake", "triage", "triaged", msg.patient_id,
+        acuity=msg.acuity, specialty=msg.specialty,
+    )
+    # Select bed (read-only; the BedAgent performs the write).
+    preferred = flow.preferred_bed_id
+    bed_id = preferred if preferred else bed.find_available_bed(store, msg.specialty)
+    if bed_id is None:
+        _record_milestone(
+            flow.lines, store, "intake", "bed", "no_bed_available", msg.patient_id
+        )
+        store.update(patient.patient_key(msg.patient_id), {"status": "waiting"})
+        flow.error = "no_bed_available"
+        text = f"No bed available — {flow.name} remains waiting (ESI-{msg.acuity})."
+        await _finish_intake(ctx, flow, text)
+        return
+    await ctx.send(
+        bed_address(bed_id),
+        BedAssignRequest(
+            patient_id=msg.patient_id,
+            required_specialty=msg.specialty,
+            preferred_bed_id=bed_id,
+            flow_id=msg.flow_id,
+        ),
+    )
+
+
+async def _on_bed_response(ctx: Context, msg: BedAssignResponse) -> None:
+    """BedAssignResponse → advance to nurse assignment.
+
+    @spec INTAKE-FLOW-006 — bed assigned → proceed to nurse.
+    """
+    flow = intake_flows.get(msg.flow_id)
+    if flow is None:
+        return
+    store = _store
+    assert store is not None
+    if not msg.success or msg.bed_id is None:
+        _record_milestone(
+            flow.lines, store, "intake", "bed", "no_bed_available", msg.patient_id
+        )
+        flow.error = "no_bed_available"
+        text = f"No bed available — {flow.name} remains waiting (ESI-{flow.acuity})."
+        await _finish_intake(ctx, flow, text)
+        return
+    flow.bed_id = msg.bed_id
+    _record_milestone(
+        flow.lines, store, "intake", "bed", "bed_assigned", msg.bed_id, patient=msg.patient_id
+    )
+    # Select nurse (read-only; the NurseAgent performs the write).
+    preferred = flow.preferred_nurse_id
+    nurse_id = preferred if preferred else nurse.find_available_nurse(store)
+    if nurse_id is None:
+        _record_milestone(
+            flow.lines, store, "intake", "nurse", "no_nurse_available", msg.patient_id
+        )
+        flow.nurse_id = None
+        await _maybe_page_doctor(ctx, flow, msg.patient_id)
+        return
+    await ctx.send(
+        nurse_address(nurse_id),
+        StaffAssignRequest(
+            patient_id=msg.patient_id,
+            bed_id=msg.bed_id,
+            role="nurse",
+            flow_id=msg.flow_id,
+        ),
+    )
+
+
+async def _on_staff_response(ctx: Context, msg: StaffAssignResponse) -> None:
+    """StaffAssignResponse (nurse or doctor) → advance intake.
+
+    Nurse: if assigned, page doctor if acuity ≤ 2; otherwise go to doctor step.
+    Doctor: finalize.
+    """
+    flow = intake_flows.get(msg.flow_id)
+    if flow is None:
+        return
+    store = _store
+    assert store is not None
+    if msg.role == "nurse":
+        if msg.accepted:
+            flow.nurse_id = msg.staff_id
+            _record_milestone(
+                flow.lines, store, "intake", "nurse", "nurse_assigned", msg.staff_id,
+                patient=msg.patient_id,
+            )
+        else:
+            _record_milestone(
+                flow.lines, store, "intake", "nurse", "no_nurse_available", msg.patient_id
+            )
+        await _maybe_page_doctor(ctx, flow, msg.patient_id)
+    elif msg.role == "doctor":
+        if msg.accepted:
+            flow.doctor_id = msg.staff_id
+            _record_milestone(
+                flow.lines, store, "intake", "doctor", "doctor_paged", msg.staff_id,
+                patient=msg.patient_id,
+            )
+        else:
+            _record_milestone(
+                flow.lines, store, "intake", "doctor", "no_doctor_available", msg.patient_id
+            )
+        await _finish_intake_with_team(ctx, flow, msg.patient_id)
+
+
+async def _maybe_page_doctor(ctx: Context, flow: IntakeFlow, patient_id: str) -> None:
+    """Page a doctor if acuity ≤ 2, else finalize immediately."""
+    store = _store
+    assert store is not None
+    if flow.acuity is not None and flow.acuity <= 2 and flow.bed_id:
+        preferred = flow.preferred_doctor_id
+        doctor_id = preferred if preferred else doctor.find_available_doctor(store, flow.specialty)
+        if doctor_id:
+            await ctx.send(
+                doctor_address(doctor_id),
+                StaffAssignRequest(
+                    patient_id=patient_id,
+                    bed_id=flow.bed_id,
+                    role="doctor",
+                    flow_id=flow.flow_id,
+                ),
+            )
+            return
+        _record_milestone(
+            flow.lines, store, "intake", "doctor", "no_doctor_available", patient_id
+        )
+    await _finish_intake_with_team(ctx, flow, patient_id)
+
+
+async def _finish_intake_with_team(ctx: Context, flow: IntakeFlow, patient_id: str) -> None:
+    """Write care_team, log intake_complete, and finalize the flow."""
+    store = _store
+    assert store is not None
+    team = [sid for sid in (flow.nurse_id, flow.doctor_id) if sid]
+    store.update(patient.patient_key(patient_id), {"care_team": team})
+    _record_milestone(flow.lines, store, "intake", "orchestrator", "intake_complete", patient_id)
+    acuity = flow.acuity or 3
+    specialty = flow.specialty
+    text = _format_intake_confirmation(
+        flow.name, acuity, specialty, flow.bed_id or "no-bed", flow.nurse_id, flow.doctor_id
+    )
+    await _finish_intake(ctx, flow, text)
+
+
+async def _finish_intake(ctx: Context, flow: IntakeFlow, confirmation: str) -> None:
+    """Close the intake flow: update active events, emit replay, send chat, free gate."""
+    from er_twin import active_events
+    from er_twin.active_events import _event_key
+
+    store = _store
+    assert store is not None
+    patient_id = flow.patient_id or ""
+    incident_id = _emit_replay(ctx, "intake", flow.lines)
+
+    if flow.active_event_id:
+        promoted = active_events.confirm_pending_proposal(
+            store, flow.active_event_id, confirmation, new_type="intake"
+        )
+        if promoted and patient_id:
+            store.update(_event_key(flow.active_event_id), {"patient_id": patient_id})
+        if not promoted:
+            active_events.create_active_event(
+                store, "intake", confirmation, patient_id=patient_id, incident_id=incident_id or ""
+            )
+    else:
+        active_events.create_active_event(
+            store, "intake", confirmation, patient_id=patient_id, incident_id=incident_id or ""
+        )
+
+    _record_memory(ctx, confirmation)
+    sender = _session_senders.recall(flow.session_id)
+    _session_senders.forget(flow.session_id)
+    intake_flows.pop(flow.flow_id, None)
+    if sender:
+        await _send_chat(ctx, sender, confirmation)
+    await _complete_command(ctx, flow.flow_id)
+
+
+# --- Discharge flow: async orchestration ---
+#
+# The confirm-discharge command sends one PatientDischargeRequest to the bound PatientAgent.
+# The PatientAgent marks the patient discharged, records sign-off staff, and releases its slot.
+# The Orchestrator receives PatientDischargeResponse, updates the active event, and sends the
+# chat confirmation.  Resource release (bed, staff) is deferred to the separate resolve flow.
+
+
+async def _start_discharge_flow(ctx: Context, flow: DischargeFlow) -> None:
+    """Kick off discharge by finding the patient's agent slot and sending PatientDischargeRequest."""
+    discharge_flows[flow.flow_id] = flow
+    store = _store
+    if store is None:
+        return
+    slot = patient.find_patient_slot(store, flow.patient_id)
+    if slot is None:
+        # Patient agent not bound (e.g. patient was in waiting status) — discharge in-place.
+        from er_twin.events.discharge_flow import commit_discharge
+
+        outcome = commit_discharge(store, flow.patient_id, flow.nurse_id, flow.doctor_id)
+        await _finish_discharge(ctx, flow, outcome["confirmation"])
+        return
+    await ctx.send(
+        patient_agent_address(slot),
+        PatientDischargeRequest(
+            patient_id=flow.patient_id,
+            nurse_id=flow.nurse_id,
+            doctor_id=flow.doctor_id,
+            flow_id=flow.flow_id,
+        ),
+    )
+
+
+async def _on_discharge_response(ctx: Context, msg: PatientDischargeResponse) -> None:
+    """PatientDischargeResponse → promote active event and send confirmation."""
+    flow = discharge_flows.get(msg.flow_id)
+    if flow is None:
+        ctx.logger.warning(f"PatientDischargeResponse for unknown flow {msg.flow_id!r}")
+        return
+    confirmation = msg.confirmation or f"Discharge confirmed for {flow.name} ({flow.mrn})."
+    await _finish_discharge(ctx, flow, confirmation)
+
+
+async def _finish_discharge(ctx: Context, flow: DischargeFlow, confirmation: str) -> None:
+    """Promote the active event, record memory, send chat reply, and free the command gate."""
+    from er_twin import active_events
+    from er_twin.active_events import _event_key
+
+    store = _store
+    assert store is not None
+
+    if flow.active_event_id:
+        promoted = active_events.confirm_pending_proposal(
+            store, flow.active_event_id, confirmation, new_type="discharge"
+        )
+        if promoted and flow.patient_id:
+            store.update(
+                _event_key(flow.active_event_id), {"patient_id": flow.patient_id}
+            )
+        if not promoted:
+            active_events.create_active_event(
+                store, "discharge", confirmation, patient_id=flow.patient_id
+            )
+    else:
+        active_events.create_active_event(
+            store, "discharge", confirmation, patient_id=flow.patient_id
+        )
+
+    _record_memory(ctx, confirmation)
+    sender = _session_senders.recall(flow.session_id)
+    _session_senders.forget(flow.session_id)
+    discharge_flows.pop(flow.flow_id, None)
+    if sender:
+        await _send_chat(
+            ctx,
+            sender,
+            f"{confirmation}\nResolve the discharge event to free bed and staff.",
+        )
+    await _complete_command(ctx, flow.flow_id)
+
+
+# --- Resolve flow: async resource-release queue ---
+#
+# Resolve drains a queue of release requests sequentially: bed → nurses → doctors.
+# Each hop sends one BedReleaseRequest or StaffReleaseRequest; the response handler pops the
+# completed item and sends the next.  When the queue is empty, _finish_resolve sends the chat reply.
+
+
+async def _start_resolve_flow(ctx: Context, flow: ResolveFlow) -> None:
+    """Register the resolve flow and drain the first release request."""
+    resolve_flows[flow.flow_id] = flow
+    await _drain_resolve_queue(ctx, flow)
+
+
+async def _drain_resolve_queue(ctx: Context, flow: ResolveFlow) -> None:
+    """Send the next release request, or finish if the queue is empty."""
+    if not flow.release_queue:
+        await _finish_resolve(ctx, flow)
+        return
+    item = flow.release_queue[0]
+    kind = item["kind"]
+    if kind == "bed":
+        await ctx.send(
+            bed_address(item["id"]),
+            BedReleaseRequest(
+                bed_id=item["id"],
+                patient_id=item["patient_id"],
+                flow_id=flow.flow_id,
+            ),
+        )
+    elif kind == "nurse":
+        await ctx.send(
+            nurse_address(item["id"]),
+            StaffReleaseRequest(
+                patient_id=item["patient_id"],
+                staff_id=item["id"],
+                role="nurse",
+                flow_id=flow.flow_id,
+            ),
+        )
+    elif kind == "doctor":
+        await ctx.send(
+            doctor_address(item["id"]),
+            StaffReleaseRequest(
+                patient_id=item["patient_id"],
+                staff_id=item["id"],
+                role="doctor",
+                flow_id=flow.flow_id,
+            ),
+        )
+
+
+async def _on_bed_release_response(ctx: Context, msg: BedReleaseResponse) -> None:
+    """BedReleaseResponse → pop the queue and send the next release."""
+    flow = resolve_flows.get(msg.flow_id)
+    if flow is None:
+        return
+    if flow.release_queue and flow.release_queue[0].get("kind") == "bed":
+        flow.release_queue.pop(0)
+    await _drain_resolve_queue(ctx, flow)
+
+
+async def _on_staff_release_response(ctx: Context, msg: StaffReleaseResponse) -> None:
+    """StaffReleaseResponse → pop the queue and send the next release."""
+    flow = resolve_flows.get(msg.flow_id)
+    if flow is None:
+        return
+    if flow.release_queue and flow.release_queue[0].get("kind") in ("nurse", "doctor"):
+        flow.release_queue.pop(0)
+    await _drain_resolve_queue(ctx, flow)
+
+
+async def _finish_resolve(ctx: Context, flow: ResolveFlow) -> None:
+    """Send the resolve confirmation chat, record memory, and free the gate."""
+    msg = f"Resolved {flow.event_id} ({flow.event_type}) — moved to event log."
+    _record_memory(ctx, msg)
+    sender = _session_senders.recall(flow.session_id)
+    _session_senders.forget(flow.session_id)
+    resolve_flows.pop(flow.flow_id, None)
+    if sender:
+        await _send_chat(ctx, sender, msg)
+    await _complete_command(ctx, flow.flow_id)
 
 
 def _new_flow_id(kind: str) -> str:
@@ -812,6 +1299,101 @@ async def _finish_oxygen(ctx: Context, flow_id: str, reply: str) -> None:
     handler = EVENT_REGISTRY["oxygen"]
     dctx = _make_dctx(ctx, PendingChatCommand(sender="", session_id="", text=""), flow_id)
     await handler._finish(dctx, flow_id, reply)  # noqa: SLF001
+
+
+# --- Intake response handlers ---
+
+
+@orchestrator.on_message(PatientIntakeResponse)
+async def on_intake_response(ctx: Context, sender: str, msg: PatientIntakeResponse) -> None:
+    """Admissions replied: advance to patient-agent bind step."""
+    try:
+        await _on_intake_response(ctx, msg)
+    except Exception:  # noqa: BLE001
+        ctx.logger.exception("on_intake_response failed")
+        await _complete_command(ctx, msg.flow_id)
+
+
+@orchestrator.on_message(_PatientBindResponse)
+async def on_bind_response(ctx: Context, sender: str, msg) -> None:
+    """Patient-agent bind replied: advance to triage."""
+    try:
+        await _on_bind_response(ctx, msg)
+    except Exception:  # noqa: BLE001
+        ctx.logger.exception("on_bind_response failed")
+        await _complete_command(ctx, msg.flow_id)
+
+
+@orchestrator.on_message(TriageResponse)
+async def on_triage_response(ctx: Context, sender: str, msg: TriageResponse) -> None:
+    """Triage replied: advance to bed assignment."""
+    try:
+        await _on_triage_response(ctx, msg)
+    except Exception:  # noqa: BLE001
+        ctx.logger.exception("on_triage_response failed")
+        await _complete_command(ctx, msg.flow_id)
+
+
+@orchestrator.on_message(BedAssignResponse)
+async def on_bed_response(ctx: Context, sender: str, msg: BedAssignResponse) -> None:
+    """Bed agent replied: advance to nurse assignment."""
+    try:
+        await _on_bed_response(ctx, msg)
+    except Exception:  # noqa: BLE001
+        ctx.logger.exception("on_bed_response failed")
+        await _complete_command(ctx, msg.flow_id)
+
+
+@orchestrator.on_message(StaffAssignResponse)
+async def on_staff_assign_response(ctx: Context, sender: str, msg: StaffAssignResponse) -> None:
+    """Nurse or doctor replied: advance intake."""
+    try:
+        await _on_staff_response(ctx, msg)
+    except Exception:  # noqa: BLE001
+        ctx.logger.exception("on_staff_assign_response failed")
+        await _complete_command(ctx, msg.flow_id)
+
+
+# --- Discharge response handlers ---
+
+
+@orchestrator.on_message(PatientDischargeResponse)
+async def on_discharge_response(ctx: Context, sender: str, msg: PatientDischargeResponse) -> None:
+    """Patient agent confirmed discharge; advance to finish_discharge."""
+    try:
+        await _on_discharge_response(ctx, msg)
+    except Exception:  # noqa: BLE001
+        ctx.logger.exception("on_discharge_response failed")
+        await _complete_command(ctx, msg.flow_id)
+
+
+@orchestrator.on_message(BedReleaseResponse)
+async def on_bed_release_response(ctx: Context, sender: str, msg: BedReleaseResponse) -> None:
+    """Bed agent released; advance the resolve queue."""
+    try:
+        await _on_bed_release_response(ctx, msg)
+    except Exception:  # noqa: BLE001
+        ctx.logger.exception("on_bed_release_response failed")
+        flow = resolve_flows.get(msg.flow_id)
+        if flow:
+            await _complete_command(ctx, flow.flow_id)
+
+
+@orchestrator.on_message(StaffReleaseResponse)
+async def on_staff_release_response(
+    ctx: Context, sender: str, msg: StaffReleaseResponse
+) -> None:
+    """Nurse or doctor released; advance the resolve queue."""
+    try:
+        await _on_staff_release_response(ctx, msg)
+    except Exception:  # noqa: BLE001
+        ctx.logger.exception("on_staff_release_response failed")
+        flow = resolve_flows.get(msg.flow_id)
+        if flow:
+            await _complete_command(ctx, flow.flow_id)
+
+
+# --- Oxygen response handlers ---
 
 
 @orchestrator.on_message(LowSupplyAlert)

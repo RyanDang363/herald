@@ -85,5 +85,29 @@ def intake(
 
 
 def build_agents(store: StorageInterface) -> list[Agent]:
-    """The AdmissionsAgent. The `PatientIntakeRequest` handler (Phase 3 wiring) calls `intake`."""
-    return [Agent(name="er-admissions", seed=seed_for(ADMISSIONS_AGENT_ID), network="testnet")]
+    """Create the AdmissionsAgent, wired with the intake request handler.
+
+    @spec INTAKE-FLOW-002 — on PatientIntakeRequest: create (or dedupe) the patient record and reply
+    with PatientIntakeResponse so the Orchestrator can advance the intake flow.
+    """
+    from uagents import Context
+
+    from er_twin.addresses import ORCHESTRATOR_ADDRESS
+    from er_twin.protocols import PatientIntakeRequest, PatientIntakeResponse
+
+    agent = Agent(name="er-admissions", seed=seed_for(ADMISSIONS_AGENT_ID), network="testnet")
+
+    @agent.on_message(PatientIntakeRequest)
+    async def on_intake(ctx: Context, sender: str, msg: PatientIntakeRequest) -> None:
+        patient_id, record, created = intake(store, msg.name, msg.chief_complaint, msg.vitals, msg.mrn)
+        ctx.logger.info(
+            f"admissions: {'created' if created else 'deduped'} patient {patient_id} ({msg.name!r})"
+        )
+        await ctx.send(
+            ORCHESTRATOR_ADDRESS,
+            PatientIntakeResponse(
+                patient_id=patient_id, record=record, created=created, flow_id=msg.flow_id
+            ),
+        )
+
+    return [agent]

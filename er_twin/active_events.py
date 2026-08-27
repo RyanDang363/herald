@@ -94,9 +94,9 @@ def confirm_pending_proposal(
 def resolve_active_event(
     store: StorageInterface,
     event_id: str,
-    recorder: ReplayRecorder | None = None,
+    recorder: "ReplayRecorder | None" = None,
 ) -> dict | None:
-    """Archive an active event to the log and remove it. Returns the event record or None."""
+    """Archive an active event to the log, delete the key, and return the record (or None)."""
     rec = get_active_event(store, event_id)
     if not rec or rec.get("status") != "active":
         return None
@@ -111,10 +111,12 @@ def resolve_active_event(
             summary=rec.get("summary", ""),
         )
     else:
+        # Emit a structured line without a seq (standalone resolve, no ReplayRecorder in scope).
         store.publish(
             "er:events",
             json.dumps(
                 {
+                    "seq": None,
                     "event": rec.get("type", "event"),
                     "actor": "admin",
                     "action": "event_resolved",
@@ -126,5 +128,6 @@ def resolve_active_event(
                 }
             ),
         )
-    store.update(_event_key(event_id), {"status": "resolved"})
+    # Delete the key entirely so it no longer appears in list_ids or list_active_events.
+    store.delete(_event_key(event_id))
     return rec

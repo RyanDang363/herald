@@ -1,4 +1,4 @@
-"""FastAPI server for the read-only admin dashboard.
+"""FastAPI server for the admin dashboard.
 
 @spec DASH-API-001, DASH-API-002, DASH-API-003, DASH-API-004, DASH-ERR-001, DASH-IN-002
 @spec DASH-AUTH-001, DASH-AUTH-002, DASH-AUTH-003, DASH-AUTH-004, DASH-AUTH-005, DASH-AUTH-006
@@ -6,9 +6,8 @@
 
 Run: uvicorn dashboard.server:app --port 8050
 
-Auth note: session-cookie login via Google OAuth (any account — no allowlist) or a hardcoded
-username/password fallback. A demo access gate, NOT real HIPAA compliance (the project uses
-synthetic data; production compliance is out of scope).
+Auth: session-cookie login via Google OAuth (optional GOOGLE_ALLOWED_EMAILS allowlist) or a
+hardcoded username/password fallback. A demo access gate, not production auth. Synthetic data only.
 """
 
 import json
@@ -24,7 +23,6 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from er_twin.config import settings
 
-from . import pika_jobs
 import dashboard.datasource as datasource
 from .datasource import active_events_list, current_events, derive_summary, live_snapshot
 
@@ -62,6 +60,27 @@ if GOOGLE_ENABLED:
     )
 
 _last_good: dict | None = None
+
+_INSECURE_DEFAULTS = {
+    "dashboard_username": "admin",
+    "dashboard_password": "password",
+    "dashboard_secret_key": "dev-insecure-secret-change-me",
+}
+
+
+def _warn_insecure_defaults() -> None:
+    import logging
+
+    log = logging.getLogger(__name__)
+    for field, default in _INSECURE_DEFAULTS.items():
+        if getattr(settings, field, None) == default:
+            log.warning(
+                f"SECURITY: {field.upper()} is the insecure default value. "
+                "Set it in .env before exposing the dashboard beyond localhost."
+            )
+
+
+_warn_insecure_defaults()
 
 
 # --- Auth ---------------------------------------------------------------------
@@ -113,7 +132,7 @@ async def auth_google(request: Request):
 
 @app.get("/auth/callback")
 async def auth_callback(request: Request):
-    """Complete OAuth: any authenticated Google account is allowed in. @spec DASH-AUTH-007, DASH-AUTH-008"""
+    """Complete OAuth: check allowlist (if configured) then set session. @spec DASH-AUTH-007, DASH-AUTH-008"""
     if not GOOGLE_ENABLED:
         return RedirectResponse("/login?error=oauth_unconfigured", status_code=303)
     try:
@@ -124,7 +143,10 @@ async def auth_callback(request: Request):
     email = userinfo.get("email")
     if not email:
         return RedirectResponse("/login?error=1", status_code=303)
-    request.session["user"] = email  # no allowlist — any Google account is accepted
+    allowed = settings.allowed_email_set
+    if allowed and email not in allowed:
+        return RedirectResponse("/login?error=unauthorized", status_code=303)
+    request.session["user"] = email
     return RedirectResponse("/", status_code=303)
 
 
@@ -149,13 +171,17 @@ def index(request: Request):
 @app.get("/api/state")
 def api_state(user: str = Depends(require_api)) -> JSONResponse:
     """Full read-only snapshot + derived KPIs. Falls back to last-good if the source is down."""
+    import logging
+
     global _last_good
     try:
         snap = live_snapshot()
-    except Exception:  # noqa: BLE001 — source unavailable must never crash the server
+    except (ConnectionError, OSError, TimeoutError) as exc:
+        # Infrastructure failures (Redis down, socket errors) degrade to last-good snapshot.
+        logging.getLogger(__name__).warning(f"api/state: data source unavailable: {exc}")
         if _last_good is not None:
             return JSONResponse({**_last_good, "stale": True})
-        raise HTTPException(status_code=503, detail="data source unavailable") from None
+        raise HTTPException(status_code=503, detail="data source unavailable") from exc
 
     payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -182,9 +208,13 @@ def api_active_events(user: str = Depends(require_api)) -> JSONResponse:
 async def api_confirm_proposal(
     event_id: str, body: dict, user: str = Depends(require_api)
 ) -> JSONResponse:
-    """Confirm a pending proposal from the dashboard UI (intake or discharge).
+    """Confirm a pending intake/discharge proposal from the dashboard.
 
     Body: { bed_id?, nurse_id, doctor_id }
+
+    This path writes the shared store directly (`commit_full_intake` / `commit_discharge`).
+    Chat confirm uses the uAgent message pipeline instead — same domain functions, different
+    entry point.
     """
     from er_twin.active_events import (
         _event_key,
@@ -194,9 +224,8 @@ async def api_confirm_proposal(
     )
     from er_twin.events.discharge_flow import commit_discharge
     from er_twin.events.intake_flow import commit_full_intake
-    from er_twin.storage import make_store
 
-    store = make_store() if settings.dashboard_source == "redis" else datasource.get_store()
+    store = datasource.get_store()
     rec = get_active_event(store, event_id)
     if not rec or rec.get("status") != "pending_approval":
         raise HTTPException(status_code=404, detail="pending proposal not found")
@@ -260,9 +289,8 @@ def api_resolve_active_event(event_id: str, user: str = Depends(require_api)) ->
     """Resolve a current event from the dashboard (archives to event log). @spec RESOLVE-FLOW-002"""
     from er_twin.events.resolve import resolve_event_from_dashboard
     from er_twin.replay import ReplayRecorder
-    from er_twin.storage import make_store
 
-    store = make_store() if settings.dashboard_source == "redis" else datasource.get_store()
+    store = datasource.get_store()
     rec = resolve_event_from_dashboard(store, event_id, ReplayRecorder())
     if rec is None:
         raise HTTPException(status_code=404, detail="active event not found")
@@ -271,8 +299,8 @@ def api_resolve_active_event(event_id: str, user: str = Depends(require_api)) ->
 
 # --- Incident replay (data-driven, LLD §9.1) ----------------------------------
 #
-# The replay page + its JSON are public (synthetic data; needed by the headless frame capturer and by
-# judges opening a shared link). The /library index is gated (see below). @spec REPLAY-FRAME-001/002
+# The replay page + its JSON are public (synthetic data; useful for sharing a replay link).
+# The /library index is gated (see below). @spec REPLAY-FRAME-001/002
 
 
 @app.get("/replay/{incident_id}")
@@ -308,9 +336,8 @@ def _library_entry(record: dict, fallback_id: str) -> dict:
         "end_ts": record.get("end_ts"),
         "speed_factor": record.get("speed_factor"),
         "involved": record.get("involved", []),
-        "video_url": record.get("video_url"),
         "snapshot_count": len(record.get("snapshots", [])),
-        "replay_url": f"/replay/{incident_id}",  # in-browser fallback (REPLAY-LIB-005)
+        "replay_url": f"/replay/{incident_id}",
     }
 
 
@@ -331,59 +358,17 @@ def api_library(user: str = Depends(require_api)) -> JSONResponse:
             try:
                 record = json.loads(path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
-                continue  # a half-written / corrupt file must not break the whole library
+                continue
             if not isinstance(record, dict):
-                continue  # valid JSON but not an incident object (e.g. a bare list) — skip, don't 500
+                continue
             entries.append(_library_entry(record, path.stem))
-    # pika_enabled lets the library page show the "Generate clip" action only when it would work.
-    return JSONResponse({"incidents": entries, "pika_enabled": settings.dashboard_allow_pika})
-
-
-# --- On-demand Pika generation (gated, dashboard-orchestrated) -----------------
-#
-# The dashboard (an ops surface, not er_twin/) lets an operator render a logged incident into a Pika
-# clip on demand. It spawns the verified offline path (capture_replay_frames -> run_pika_keyframes.ps1
-# -> Claude CLI -> Pika MCP), which back-writes video_url into out/replay/{incident}.json. Gated by
-# DASHBOARD_ALLOW_PIKA because it spends Pika credits and shells out. @spec REPLAY-PIKA-003
-
-
-@app.post("/api/replay/{incident_id}/generate")
-def api_replay_generate(incident_id: str, user: str = Depends(require_api)) -> JSONResponse:
-    """Start (or rejoin) an on-demand Pika render for an incident. 403 unless DASHBOARD_ALLOW_PIKA."""
-    if not settings.dashboard_allow_pika:
-        raise HTTPException(
-            status_code=403, detail="Pika generation is disabled (set DASHBOARD_ALLOW_PIKA=true)"
-        )
-    if _replay_file(incident_id) is None:
-        raise HTTPException(status_code=404, detail="incident replay not found")
-    job = pika_jobs.start_job(incident_id, _REPLAY_DIR)
-    return JSONResponse(job.as_dict(), status_code=202)
-
-
-@app.get("/api/replay/{incident_id}/status")
-def api_replay_status(incident_id: str, user: str = Depends(require_api)) -> JSONResponse:
-    """Poll an incident's render job. Reports the existing clip (idle) when no job has run this session."""
-    if not settings.dashboard_allow_pika:
-        raise HTTPException(
-            status_code=403, detail="Pika generation is disabled (set DASHBOARD_ALLOW_PIKA=true)"
-        )
-    job = pika_jobs.get_job(incident_id)
-    if job is None:
-        url = pika_jobs.read_video_url(_REPLAY_DIR, incident_id)
-        return JSONResponse(
-            {"incident_id": incident_id, "status": pika_jobs.IDLE, "video_url": url, "error": None}
-        )
-    return JSONResponse(job.as_dict())
+    return JSONResponse({"incidents": entries})
 
 
 @app.post("/api/command")
-def api_command(body: dict, user: str = Depends(require_api)) -> JSONResponse:
-    """Deferred input route — rejected while read-only. @spec DASH-IN-002"""
-    if not settings.dashboard_allow_input:
-        raise HTTPException(
-            status_code=403, detail="command input is disabled (read-only dashboard)"
-        )
-    from .orchestrator_client import send_command
-
-    accepted = send_command(body.get("phrase", ""))
-    return JSONResponse({"accepted": accepted})
+def api_command(user: str = Depends(require_api)) -> JSONResponse:
+    """Command bar is not wired. Chat (ASI:One / USE_MOCK) is the command surface. @spec DASH-IN-002"""
+    raise HTTPException(
+        status_code=403,
+        detail="command input is disabled — send commands through the Orchestrator chat",
+    )

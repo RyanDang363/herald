@@ -36,6 +36,10 @@ class StorageInterface(ABC):
     def publish(self, channel: str, msg: str) -> None:
         """Append an event line to the feed channel (Stream or in-memory list)."""
 
+    @abstractmethod
+    def delete(self, key: str) -> None:
+        """Remove the record at `key` and drop it from the entity index."""
+
 
 class InMemoryStore(StorageInterface):
     """Process-local dict implementation. No external dependencies."""
@@ -59,6 +63,9 @@ class InMemoryStore(StorageInterface):
 
     def publish(self, channel: str, msg: str) -> None:
         self._channels.setdefault(channel, []).append(msg)
+
+    def delete(self, key: str) -> None:
+        self._data.pop(key, None)
 
 
 class RedisStore(StorageInterface):
@@ -153,6 +160,13 @@ class RedisStore(StorageInterface):
     def publish(self, channel: str, msg: str) -> None:
         # @spec MEM-FLOW-001 (event feed side)
         self._client.xadd(channel, {"msg": msg})
+
+    def delete(self, key: str) -> None:
+        entity, eid = self._entity_and_id(key)
+        pipe = self._client.pipeline(transaction=True)
+        pipe.delete(key)
+        pipe.srem(f"er:index:{entity}", eid)
+        pipe.execute()
 
 
 def make_store() -> StorageInterface:

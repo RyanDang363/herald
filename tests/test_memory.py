@@ -22,21 +22,24 @@ _HAS_IRIS = all(
 
 
 def _check_iris_reachable() -> str | None:
-    """Return a skip reason if the Iris API is unreachable, else None."""
+    """Return a skip reason if the Iris store is unreachable, else None.
+
+    Uses a lightweight SDK probe (record_event) rather than a plain HTTP GET
+    so that backend failures (e.g. Redis Cloud DNS unavailable, 424) are
+    caught here and cause a clean skip rather than a loud test failure.
+    """
     if not _HAS_IRIS:
         return "AGENT_MEMORY_* vars not set"
     try:
-        import httpx
-
-        resp = httpx.get(
-            os.environ.get("AGENT_MEMORY_BASE_URL", ""),
-            timeout=3,
+        mem = IrisMemory(
+            base_url=os.environ["AGENT_MEMORY_BASE_URL"],
+            store_id=os.environ["AGENT_MEMORY_STORE_ID"],
+            api_key=os.environ["AGENT_MEMORY_API_KEY"],
         )
-        if resp.status_code >= 500:
-            return f"Iris API returned {resp.status_code}"
+        mem.record_event("__connectivity_check__")
         return None
     except Exception as exc:  # noqa: BLE001
-        return f"Iris API unreachable: {exc}"
+        return f"Iris store unreachable: {exc}"
 
 
 _SKIP_IRIS_REASON = _check_iris_reachable()

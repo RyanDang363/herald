@@ -198,35 +198,6 @@ function mountFloor() {
   shell = map.querySelector(".floor-shell");
 }
 
-// Seek API used by the headless frame capturer (scripts/capture_replay_frames.py) and manual seeking.
-function exposeApi() {
-  window.replayApi = {
-    ready: true,
-    incidentId,
-    snapshotCount: () => snapshots.length,
-    keyframeSeqs: () => snapshots.map((s) => s.seq),
-    seekToSeq(seq) {
-      const idx = snapshots.findIndex((s) => s.seq === seq);
-      if (idx >= 0) {
-        pause();
-        renderAt(rel[idx]);
-      }
-      return idx >= 0;
-    },
-    seekToIndex(idx) {
-      if (idx >= 0 && idx < snapshots.length) {
-        pause();
-        renderAt(rel[idx]);
-        return true;
-      }
-      return false;
-    },
-    seekToFraction(f) {
-      pause();
-      renderAt((Number(f) || 0) * span);
-    },
-  };
-}
 
 async function init() {
   $("replay-id").textContent = incidentId;
@@ -238,7 +209,6 @@ async function init() {
   } catch (e) {
     $("banner").classList.remove("hidden");
     $("replay-caption").textContent = "Replay data not found for this incident.";
-    window.replayApi = { ready: true, error: true, snapshotCount: () => 0 };
     return;
   }
 
@@ -250,7 +220,6 @@ async function init() {
   mountFloor();
   if (!snapshots.length) {
     $("replay-caption").textContent = "No snapshots captured for this incident.";
-    exposeApi();
     return;
   }
 
@@ -267,7 +236,6 @@ async function init() {
   };
 
   renderAt(0);
-  exposeApi();
 
   // Some incidents have nothing to animate: a single point-in-time snapshot (status summary), or
   // multiple snapshots with identical state (a deduplicated/no-op intake). Render the captured state
