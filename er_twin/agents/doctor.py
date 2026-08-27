@@ -10,7 +10,7 @@ from uagents import Agent
 from er_twin.addresses import seed_for
 from er_twin.storage import StorageInterface
 
-# Doctor id -> specialty (matches the shared fixture in docs/TEAM.md).
+# Doctor id -> specialty (matches dashboard/fixtures/er_state.json).
 DOCTORS: dict[str, str] = {"doc1": "cardiology", "doc2": "general"}
 DOCTOR_LOAD_CAP = 3  # a doctor stays available while load < cap (decision R2-A)
 
@@ -44,7 +44,9 @@ def find_available_doctor(store: StorageInterface, specialty: str | None = None)
     return available[0] if available else None
 
 
-def assign_doctor(store: StorageInterface, doctor_id: str, patient_id: str, bed_id: str | None = None) -> bool:
+def assign_doctor(
+    store: StorageInterface, doctor_id: str, patient_id: str, bed_id: str | None = None
+) -> bool:
     """Page a doctor: increment load, add the patient; goes unavailable only at the load cap.
 
     @spec INTAKE-FLOW-011 — increment load, add the patient to assignments, return accepted.
@@ -89,8 +91,63 @@ def release_doctor(store: StorageInterface, doctor_id: str, patient_id: str) -> 
 
 
 def build_agents(store: StorageInterface) -> list[Agent]:
-    """Create one DoctorAgent per doctor. Assignment handlers are added in Phase 3."""
-    return [
-        Agent(name=f"er-{doctor_id}", seed=seed_for(doctor_id), network="testnet")
-        for doctor_id in DOCTORS
-    ]
+    """Create one DoctorAgent per doctor, wired with intake and release handlers.
+
+    Handlers wired:
+    - StaffAssignRequest  → Event 1 (intake doctor paging)
+    - StaffReleaseRequest → Event 4 (resolve: release doctor from discharged patient)
+    """
+    from uagents import Context
+
+    from er_twin.addresses import ORCHESTRATOR_ADDRESS
+    from er_twin.protocols import StaffAssignRequest, StaffAssignResponse, StaffReleaseRequest, StaffReleaseResponse
+
+    agents: list[Agent] = []
+    for doctor_id in DOCTORS:
+        agent = Agent(name=f"er-{doctor_id}", seed=seed_for(doctor_id), network="testnet")
+
+        def _make_handlers(this_doctor_id: str):
+            async def on_assign(ctx: Context, sender: str, msg: StaffAssignRequest) -> None:
+                if msg.role != "doctor":
+                    return  # nurse assign messages are not for a doctor agent
+                accepted = assign_doctor(store, this_doctor_id, msg.patient_id, bed_id=msg.bed_id)
+                ctx.logger.info(
+                    f"{this_doctor_id} {'accepted' if accepted else 'declined'} page "
+                    f"for {msg.patient_id} at {msg.bed_id}"
+                )
+                await ctx.send(
+                    ORCHESTRATOR_ADDRESS,
+                    StaffAssignResponse(
+                        patient_id=msg.patient_id,
+                        staff_id=this_doctor_id,
+                        accepted=accepted,
+                        role="doctor",
+                        flow_id=msg.flow_id,
+                    ),
+                )
+
+            async def on_release(ctx: Context, sender: str, msg: StaffReleaseRequest) -> None:
+                if msg.role != "doctor":
+                    return
+                release_doctor(store, this_doctor_id, msg.patient_id)
+                ctx.logger.info(
+                    f"{this_doctor_id}: released from patient {msg.patient_id} (resolve flow)"
+                )
+                await ctx.send(
+                    ORCHESTRATOR_ADDRESS,
+                    StaffReleaseResponse(
+                        patient_id=msg.patient_id,
+                        staff_id=this_doctor_id,
+                        role="doctor",
+                        released=True,
+                        flow_id=msg.flow_id,
+                    ),
+                )
+
+            return on_assign, on_release
+
+        on_assign, on_release = _make_handlers(doctor_id)
+        agent.on_message(StaffAssignRequest)(on_assign)
+        agent.on_message(StaffReleaseRequest)(on_release)
+        agents.append(agent)
+    return agents

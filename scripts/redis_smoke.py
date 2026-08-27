@@ -56,7 +56,9 @@ def main() -> int:
             store._client.srem("er:index:patient", "__smoke__")
 
             # hash write + read
-            store.set(smoke_key, {"name": "Smoke", "acuity": 1, "available": True, "care_team": ["n1"]})
+            store.set(
+                smoke_key, {"name": "Smoke", "acuity": 1, "available": True, "care_team": ["n1"]}
+            )
             record = store.get(smoke_key)
             ok = record.get("name") == "Smoke" and record.get("acuity") == 1
             failures += 0 if check("RedisStore: hash round-trip", ok) else 1
@@ -68,7 +70,11 @@ def main() -> int:
             # Stream
             store.publish("er:events", '{"event": "smoke_test"}')
             stream_len = store._client.xlen("er:events")
-            failures += 0 if check("RedisStore: Stream event", stream_len >= 1, f"stream len={stream_len}") else 1
+            failures += (
+                0
+                if check("RedisStore: Stream event", stream_len >= 1, f"stream len={stream_len}")
+                else 1
+            )
 
         finally:
             store._client.delete(smoke_key)
@@ -77,7 +83,11 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 2. Iris Agent Memory health
     # ------------------------------------------------------------------
-    iris_vars = (settings.agent_memory_base_url, settings.agent_memory_store_id, settings.agent_memory_api_key)
+    iris_vars = (
+        settings.agent_memory_base_url,
+        settings.agent_memory_store_id,
+        settings.agent_memory_api_key,
+    )
     if not all(iris_vars):
         check("Iris Agent Memory: health", None, "AGENT_MEMORY_* vars not set")
     else:

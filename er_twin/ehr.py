@@ -1,15 +1,19 @@
 """EHR loader — intake-time patient history merge (LLD §4 EHR Contract).
 
 Responsibilities:
-  - Load and cache the committed master EHR fixture (fixtures/ehr_master.json).
+  - Load and cache the committed master EHR fixture (fixtures/ehr_master.json) as read-only.
   - Distinguish returning patients (known MRN → load history) from new patients
-    (unknown/blank MRN → empty history + writeback + mint MRN when needed).
+    (unknown/blank MRN → empty history, tracked in memory only — never written back to disk).
   - Provide find_active_patient_by_mrn so agents can resolve MRN → live patient_id
     without raw Redis scans (works on InMemoryStore and RedisStore alike).
 
 Division of labour with AdmissionsAgent (Dev 1):
   - build_live_record returns the EHR-enriched record WITHOUT patient_id / status.
   - AdmissionsAgent adds patient_id, sets status="waiting", and calls store.set().
+
+The fixture file is never written at runtime.  New patients minted during a demo run live only in
+the module-level `_runtime_new_patients` dict (keyed by MRN), which is checked before the on-disk
+fixture so callers always see the freshly registered entry within the same process.
 """
 
 from __future__ import annotations
@@ -23,6 +27,9 @@ if TYPE_CHECKING:
 
 # Module-level cache keyed by resolved fixture path so tests can override safely.
 _master_cache: dict[str, dict] = {}
+
+# Runtime-only patient registry: new patients minted during a demo run but never persisted to disk.
+_runtime_new_patients: dict[str, dict] = {}
 
 
 def _fixture_path() -> pathlib.Path:
@@ -51,13 +58,20 @@ def _read_fixture(resolved_path: str) -> dict:
 
 
 def _flush_cache(path: pathlib.Path) -> None:
-    """Invalidate the in-process cache for the given path (called after writeback)."""
+    """Invalidate the in-process fixture cache for the given path (used in tests)."""
     key = str(path.resolve())
     _master_cache.pop(key, None)
 
 
+def _clear_runtime_patients() -> None:
+    """Clear all runtime-registered patients (use in test teardown for isolation)."""
+    _runtime_new_patients.clear()
+
+
 def get_ehr_record(mrn: str, path: pathlib.Path | None = None) -> dict | None:
-    """Return the master EHR entry for `mrn`, or None if absent."""
+    """Return the EHR entry for `mrn` — checks runtime-registered patients before the on-disk fixture."""
+    if mrn in _runtime_new_patients:
+        return _runtime_new_patients[mrn]
     return load_master(path).get(mrn)
 
 
@@ -89,17 +103,18 @@ def register_new_patient(
     gender: str = "U",
     path: pathlib.Path | None = None,
 ) -> dict:
-    """Append a new stub entry to the master EHR and refresh the in-process cache.
+    """Register a new patient in the runtime-only cache (never writes to the fixture file).
 
-    No-op (returns existing entry) if MRN already exists — EHR-IDEM-001.
-    Cache is refreshed after writeback so get_ehr_record sees the new entry — EHR-IDEM-002.
+    No-op (returns existing entry) if MRN already exists in either the runtime cache or the
+    on-disk fixture — EHR-IDEM-001.  The runtime cache is checked by get_ehr_record so callers
+    see the new entry in the same process — EHR-IDEM-002.
     """
     # @spec EHR-IDEM-001, EHR-IDEM-002
-    fixture = path or _fixture_path()
-    master = load_master(fixture)
-
-    if mrn in master:
-        return master[mrn]
+    if mrn in _runtime_new_patients:
+        return _runtime_new_patients[mrn]
+    existing = load_master(path).get(mrn)
+    if existing is not None:
+        return existing
 
     entry: dict = {
         "mrn": mrn,
@@ -110,16 +125,7 @@ def register_new_patient(
         "conditions": [],
         "allergies": [],
     }
-    master[mrn] = entry
-
-    fixture.parent.mkdir(parents=True, exist_ok=True)
-    with open(fixture, "w", encoding="utf-8") as fh:
-        json.dump(master, fh, indent=2)
-
-    # Refresh cache so subsequent in-process lookups see the new entry.
-    _flush_cache(fixture)
-    _master_cache[str(fixture.resolve())] = master
-
+    _runtime_new_patients[mrn] = entry
     return entry
 
 

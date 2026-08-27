@@ -26,11 +26,17 @@ from er_twin.storage import StorageInterface
 
 LOW_SUPPLY_THRESHOLD = 50  # percent; oxygen below this is "low" (OXY-FLOW-001)
 
-# Demo inventory (matches the shared fixture in docs/TEAM.md); all units start free.
+# Demo inventory (matches dashboard/fixtures/er_state.json); all units start free.
 EQUIPMENT: list[dict] = [
     {"id": "o2_1", "type": "oxygen", "supply_level": 45, "in_use_by": None, "location": "storage"},
     {"id": "o2_2", "type": "oxygen", "supply_level": 88, "in_use_by": None, "location": "storage"},
-    {"id": "defib_1", "type": "defibrillator", "supply_level": None, "in_use_by": None, "location": "nurses-station"},
+    {
+        "id": "defib_1",
+        "type": "defibrillator",
+        "supply_level": None,
+        "in_use_by": None,
+        "location": "nurses-station",
+    },
 ]
 
 
@@ -151,9 +157,10 @@ def swap_oxygen_unit(
     """
     occupant = store.get(bed_key(bed_id)).get("occupied_by")
     bed = store.get(bed_key(bed_id))
-    if bed.get("equipment") == [replacement_id] and store.get(
-        equipment_key(replacement_id)
-    ).get("in_use_by") == occupant:
+    if (
+        bed.get("equipment") == [replacement_id]
+        and store.get(equipment_key(replacement_id)).get("in_use_by") == occupant
+    ):
         return occupant  # swap already applied — no-op
     loc = _bed_location(bed_id)
     store.update(equipment_key(replacement_id), {"in_use_by": occupant, "location": loc})
@@ -185,8 +192,11 @@ def _make_simulate_handler(store: StorageInterface, equipment_id: str):
     async def on_simulate(ctx: Context, sender: str, msg: SimulateOxygenDropRequest):
         # @spec OXY-FLOW-007 — drop my own supply + the bed patient's spo2...
         simulate_oxygen_drop(
-            store, msg.bed_id, equipment_id=equipment_id,
-            new_supply_level=msg.new_supply_level, patient_spo2=msg.patient_spo2,
+            store,
+            msg.bed_id,
+            equipment_id=equipment_id,
+            new_supply_level=msg.new_supply_level,
+            patient_spo2=msg.patient_spo2,
         )
         unit = store.get(equipment_key(equipment_id))
         ctx.logger.info(

@@ -35,7 +35,9 @@ def test_synthesize_vitals_deterministic():
 def test_plan_intake_proposal_triages_without_assigning_bed():
     # @spec ASSIGN-FLOW-001 — plan is now fully read-only; no patient record created yet.
     store = _clean_store()
-    plan = plan_intake_proposal(store, "Casey Lee", "chest pain", synthesize_vitals("MRN-0001"), "MRN-0001")
+    plan = plan_intake_proposal(
+        store, "Casey Lee", "chest pain", synthesize_vitals("MRN-0001"), "MRN-0001"
+    )
     assert plan["acuity"] == 2
     assert plan["proposed"]["bed_id"] is not None
     assert plan.get("error") is None
@@ -46,11 +48,18 @@ def test_plan_intake_proposal_triages_without_assigning_bed():
 def test_commit_full_intake_creates_patient_and_assigns_resources():
     # @spec ASSIGN-FLOW-002 @spec ASSIGN-STATE-001
     from er_twin.events.intake_flow import commit_full_intake
+
     store = _clean_store()
     vitals = synthesize_vitals("MRN-0001")
     outcome = commit_full_intake(
-        store, "Casey Lee", "chest pain", vitals, "MRN-0001",
-        "bed1", "nurse1", "doctor1",
+        store,
+        "Casey Lee",
+        "chest pain",
+        vitals,
+        "MRN-0001",
+        "bed1",
+        "nurse1",
+        "doctor1",
     )
     assert outcome["bed_id"] == "bed1"
     assert store.get("er:nurse:nurse1")["location"] == "bed1"
@@ -60,13 +69,19 @@ def test_commit_full_intake_creates_patient_and_assigns_resources():
 def test_commit_intake_assignments_moves_staff():
     # @spec ASSIGN-FLOW-002 @spec ASSIGN-STATE-001 — uses pre-created patient (test helper path)
     store = _clean_store()
-    patient_id, _, _ = admissions.intake(store, "Casey Lee", "chest pain", synthesize_vitals("MRN-0001"), "MRN-0001")
+    patient_id, _, _ = admissions.intake(
+        store, "Casey Lee", "chest pain", synthesize_vitals("MRN-0001"), "MRN-0001"
+    )
     slot = patient.find_idle_slot(store)
     patient.bind_slot(store, slot, patient_id, store.get(f"er:patient:{patient_id}"))
     store.update(f"er:patient:{patient_id}", {"status": "in_triage"})
     triage.triage(store, patient_id)
     outcome = commit_intake_assignments(
-        store, patient_id, "bed1", "nurse1", "doctor1",
+        store,
+        patient_id,
+        "bed1",
+        "nurse1",
+        "doctor1",
     )
     assert outcome["bed_id"] == "bed1"
     assert store.get("er:nurse:nurse1")["location"] == "bed1"

@@ -1892,32 +1892,6 @@ header:not(.topbar) h1 {
 }
 .lib-fallback:hover { background: var(--accent-soft); }
 
-/* On-demand Pika generation (REPLAY-PIKA-003) */
-.gen-btn {
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  color: #f5f9fb;
-  background: var(--accent);
-  border: 1px solid var(--accent);
-  padding: 8px 16px;
-  border-radius: 999px;
-  cursor: pointer;
-}
-.gen-btn:hover { background: var(--ink-soft); border-color: var(--ink-soft); }
-.gen-working { gap: 12px; }
-.gen-msg { color: var(--ink-soft); }
-.gen-error { color: var(--alert); font-weight: 700; max-width: 90%; text-align: center; }
-.gen-spinner {
-  width: 22px;
-  height: 22px;
-  border: 3px solid var(--accent-soft);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: gen-spin 0.9s linear infinite;
-}
-@keyframes gen-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .gen-spinner { animation: none; } }
 
 .lib-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
 .lib-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }

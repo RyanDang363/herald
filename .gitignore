@@ -7,11 +7,11 @@
 venv/
 __pycache__/
 *.pyc
+*.pyo
 
-# uv lock (commit this — teammates need identical deps)
-# uv.lock is intentionally NOT gitignored
+# uv.lock is committed — teammates need identical deps
 
-# Dependencies
+# Node (dashboard static build tooling, if used)
 node_modules/
 
 # Environment / secrets
@@ -22,24 +22,31 @@ node_modules/
 # Build output
 dist/
 build/
-# Replay artifacts are generated; keep the dir (out/.gitkeep) but ignore its contents.
+
+# Replay artifacts are generated at runtime; keep the dir but ignore its contents.
 out/*
 !out/.gitkeep
 
 # Logs
 *.log
-npm-debug.log*
 
 # OS files
 .DS_Store
 Thumbs.db
 
-# Internal / hackathon docs — production deploy only needs README.md
-**/*.md
-!/README.md
+# pytest / ruff caches
+.pytest_cache/
+.ruff_cache/
 
-# Reference libraries, specs, and agent skills (local dev only)
-.agents/
+# Local-only agent / design notes (not part of the public repo)
+CLAUDE.md
+CURSOR.md
+AGENT.md
+AGENTVERSE_README.md
+FETCHAI_DELIVERABLES.md
+ADDING_EVENTS.md
+STATUS.md
 docs/
 fetch-ai-documentation/
 redis-documentation/
+.agents/

@@ -9,7 +9,14 @@ the pure mutation the Orchestrator applies on an accepted dispatch (decision R2-
 from uagents import Agent, Context
 
 from er_twin.addresses import seed_for
-from er_twin.protocols import StaffDispatchRequest, StaffDispatchResponse
+from er_twin.protocols import (
+    StaffAssignRequest,
+    StaffAssignResponse,
+    StaffDispatchRequest,
+    StaffDispatchResponse,
+    StaffReleaseRequest,
+    StaffReleaseResponse,
+)
 from er_twin.storage import StorageInterface
 
 NURSES: list[str] = ["nurse1", "nurse2"]
@@ -37,7 +44,9 @@ def find_available_nurse(store: StorageInterface) -> str | None:
     return None
 
 
-def assign_nurse(store: StorageInterface, nurse_id: str, patient_id: str, bed_id: str | None = None) -> bool:
+def assign_nurse(
+    store: StorageInterface, nurse_id: str, patient_id: str, bed_id: str | None = None
+) -> bool:
     """Assign a nurse to a patient; the nurse goes unavailable (single-patient capacity).
 
     @spec INTAKE-FLOW-008 — set unavailable, add the patient to assignments, return accepted.
@@ -73,8 +82,7 @@ def dispatch_nurse(store: StorageInterface, nurse_id: str, bed_id: str) -> bool:
         return True
     store.update(
         nurse_key(nurse_id),
-        {"available": False, "location": bed_id,
-         "assignments": assignments + [task]},
+        {"available": False, "location": bed_id, "assignments": assignments + [task]},
     )
     return True
 
@@ -106,13 +114,70 @@ def release_nurse(store: StorageInterface, nurse_id: str, patient_id: str) -> No
 
 
 def build_agents(store: StorageInterface) -> list[Agent]:
-    """Create one NurseAgent per nurse, wired with the Event-2 `StaffDispatchRequest` handler."""
+    """Create one NurseAgent per nurse.
+
+    Handlers wired:
+    - StaffDispatchRequest  → Event 2 (oxygen swap dispatch)
+    - StaffAssignRequest    → Event 1 (intake nurse assignment)
+    - StaffReleaseRequest   → Event 4 (resolve: release nurse from discharged patient)
+    """
     agents: list[Agent] = []
     for nurse_id in NURSES:
         agent = Agent(name=f"er-{nurse_id}", seed=seed_for(nurse_id), network="testnet")
         agent.on_message(StaffDispatchRequest)(_make_dispatch_handler(store, nurse_id))
+        agent.on_message(StaffAssignRequest)(_make_assign_handler(store, nurse_id))
+        agent.on_message(StaffReleaseRequest)(_make_release_handler(store, nurse_id))
         agents.append(agent)
     return agents
+
+
+def _make_assign_handler(store: StorageInterface, nurse_id: str):
+    """Intake nurse assignment handler — mutates state directly and replies to the Orchestrator."""
+    from er_twin.addresses import ORCHESTRATOR_ADDRESS
+
+    async def on_assign(ctx: Context, sender: str, msg: StaffAssignRequest) -> None:
+        if msg.role != "nurse":
+            return  # doctor assign messages are not for a nurse agent
+        accepted = assign_nurse(store, nurse_id, msg.patient_id, bed_id=msg.bed_id)
+        ctx.logger.info(
+            f"{nurse_id} {'accepted' if accepted else 'declined'} intake assignment "
+            f"for {msg.patient_id} at {msg.bed_id}"
+        )
+        await ctx.send(
+            ORCHESTRATOR_ADDRESS,
+            StaffAssignResponse(
+                patient_id=msg.patient_id,
+                staff_id=nurse_id,
+                accepted=accepted,
+                role="nurse",
+                flow_id=msg.flow_id,
+            ),
+        )
+
+    return on_assign
+
+
+def _make_release_handler(store: StorageInterface, nurse_id: str):
+    """Resolve: release a nurse from a discharged patient and reply to the Orchestrator."""
+    from er_twin.addresses import ORCHESTRATOR_ADDRESS
+
+    async def on_release(ctx: Context, sender: str, msg: StaffReleaseRequest) -> None:
+        if msg.role != "nurse":
+            return
+        release_nurse(store, nurse_id, msg.patient_id)
+        ctx.logger.info(f"{nurse_id}: released from patient {msg.patient_id} (resolve flow)")
+        await ctx.send(
+            ORCHESTRATOR_ADDRESS,
+            StaffReleaseResponse(
+                patient_id=msg.patient_id,
+                staff_id=nurse_id,
+                role="nurse",
+                released=True,
+                flow_id=msg.flow_id,
+            ),
+        )
+
+    return on_release
 
 
 def _make_dispatch_handler(store: StorageInterface, nurse_id: str):

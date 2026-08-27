@@ -35,14 +35,48 @@ PATIENT_COUNT = 20
 # ---------------------------------------------------------------------------
 
 _FIRST_NAMES = [
-    "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Avery", "Quinn", "Drew",
-    "Peyton", "Skyler", "Reese", "Emery", "Dakota", "Sage", "River", "Finley",
-    "Rowan", "Cameron", "Logan", "Alex",
+    "Jordan",
+    "Taylor",
+    "Morgan",
+    "Casey",
+    "Riley",
+    "Avery",
+    "Quinn",
+    "Drew",
+    "Peyton",
+    "Skyler",
+    "Reese",
+    "Emery",
+    "Dakota",
+    "Sage",
+    "River",
+    "Finley",
+    "Rowan",
+    "Cameron",
+    "Logan",
+    "Alex",
 ]
 _LAST_NAMES = [
-    "Lee", "Chen", "Patel", "Garcia", "Smith", "Johnson", "Williams", "Brown",
-    "Davis", "Miller", "Wilson", "Moore", "Taylor", "Anderson", "Thomas",
-    "Jackson", "Harris", "Martin", "Thompson", "White",
+    "Lee",
+    "Chen",
+    "Patel",
+    "Garcia",
+    "Smith",
+    "Johnson",
+    "Williams",
+    "Brown",
+    "Davis",
+    "Miller",
+    "Wilson",
+    "Moore",
+    "Taylor",
+    "Anderson",
+    "Thomas",
+    "Jackson",
+    "Harris",
+    "Martin",
+    "Thompson",
+    "White",
 ]
 _GENDERS = ["M", "F", "M", "F", "M"]  # weighted roughly 50/50
 
@@ -157,6 +191,7 @@ def build_synthetic(count: int = PATIENT_COUNT) -> dict:
 # Synthea CSV parser
 # ---------------------------------------------------------------------------
 
+
 def build_from_synthea(csv_dir: pathlib.Path) -> dict:
     """Parse Synthea CSV output → master EHR dict keyed by MRN."""
     patients_csv = csv_dir / "patients.csv"
@@ -216,6 +251,7 @@ def build_from_synthea(csv_dir: pathlib.Path) -> dict:
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build fixtures/ehr_master.json")

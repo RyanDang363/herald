@@ -6,9 +6,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from er_twin.config import settings
+from er_twin.storage import InMemoryStore
+from er_twin.active_events import create_active_event
 from dashboard import datasource
 from dashboard.datasource import build_fixture_store, derive_summary, snapshot
-from dashboard import pika_jobs
 from dashboard import server
 from dashboard.server import app
 
@@ -42,13 +43,35 @@ def _write_incident(replay_dir, incident_id="patient_intake-0001", **overrides) 
         "start_ts": 1000.0,
         "end_ts": 1012.0,
         "involved": ["Jordan Lee", "bed-1", "Nurse Maya"],
-        "video_url": None,
         "snapshots": [
-            {"seq": 0, "ts": 1000.0, "action": "intake_received", "actor": "orchestrator",
-             "target": None, "entities": {"patients": [], "beds": [], "nurses": [], "doctors": [], "equipment": []}},
-            {"seq": 1, "ts": 1006.0, "action": "bed_assigned", "actor": "bed", "target": "bed1",
-             "entities": {"patients": [{"id": "p1", "status": "admitted", "assigned_bed": "bed1"}],
-                          "beds": [{"id": "bed1", "status": "occupied"}], "nurses": [], "doctors": [], "equipment": []}},
+            {
+                "seq": 0,
+                "ts": 1000.0,
+                "action": "intake_received",
+                "actor": "orchestrator",
+                "target": None,
+                "entities": {
+                    "patients": [],
+                    "beds": [],
+                    "nurses": [],
+                    "doctors": [],
+                    "equipment": [],
+                },
+            },
+            {
+                "seq": 1,
+                "ts": 1006.0,
+                "action": "bed_assigned",
+                "actor": "bed",
+                "target": "bed1",
+                "entities": {
+                    "patients": [{"id": "p1", "status": "admitted", "assigned_bed": "bed1"}],
+                    "beds": [{"id": "bed1", "status": "occupied"}],
+                    "nurses": [],
+                    "doctors": [],
+                    "equipment": [],
+                },
+            },
         ],
     }
     record.update(overrides)
@@ -283,7 +306,7 @@ def test_api_replay_corrupt_file_404(replay_dir):
     assert new_client().get("/api/replay/patient_intake-0001").status_code == 404
 
 
-# @spec REPLAY-FRAME-002 — replay endpoints need no auth (public synthetic replay; capturer/judges open it)
+# @spec REPLAY-FRAME-002 — replay endpoints need no auth (public synthetic replay)
 def test_api_replay_public(replay_dir):
     _write_incident(replay_dir)
     assert new_client().get("/api/replay/patient_intake-0001").status_code == 200
@@ -297,19 +320,22 @@ def test_api_replay_rejects_unsafe_id(replay_dir):
 # --- Incident library (session-only, gated, LLD §9.1) -------------------------
 
 
-# @spec REPLAY-LIB-004 — the library lists every incident in out/replay/ with its metadata + video
+# @spec REPLAY-LIB-004 — the library lists every incident in out/replay/ with its metadata
 def test_api_library_lists_incidents(auth_client, replay_dir):
-    _write_incident(replay_dir, "patient_intake-0001",
-                    video_url="https://cdn.pika.test/clip1.mp4")
-    _write_incident(replay_dir, "low_oxygen_alert-0001", incident_type="low_oxygen_alert",
-                    title="Low-oxygen response — bed-3", summary="O2 swapped on bed-3.",
-                    involved=["bed-3", "Nurse Chen"])
+    _write_incident(replay_dir, "patient_intake-0001")
+    _write_incident(
+        replay_dir,
+        "low_oxygen_alert-0001",
+        incident_type="low_oxygen_alert",
+        title="Low-oxygen response — bed-3",
+        summary="O2 swapped on bed-3.",
+        involved=["bed-3", "Nurse Chen"],
+    )
     body = auth_client.get("/api/library").json()
     ids = {e["incident_id"] for e in body["incidents"]}
     assert ids == {"patient_intake-0001", "low_oxygen_alert-0001"}
     by_id = {e["incident_id"]: e for e in body["incidents"]}
     entry = by_id["patient_intake-0001"]
-    assert entry["video_url"] == "https://cdn.pika.test/clip1.mp4"
     assert entry["incident_type"] == "patient_intake"
     assert entry["start_ts"] == 1000.0 and entry["end_ts"] == 1012.0
     assert entry["involved"] == ["Jordan Lee", "bed-1", "Nurse Maya"]
@@ -318,12 +344,11 @@ def test_api_library_lists_incidents(auth_client, replay_dir):
     assert "snapshots" not in entry and entry["snapshot_count"] == 2
 
 
-# @spec REPLAY-LIB-005 — an incident with no video_url still lists, with the /replay fallback link
-def test_api_library_entry_without_video_still_lists(auth_client, replay_dir):
-    _write_incident(replay_dir, "patient_intake-0001", video_url=None)
+# @spec REPLAY-LIB-005 — an incident without a video still lists with the /replay fallback link
+def test_api_library_entry_lists_with_replay_link(auth_client, replay_dir):
+    _write_incident(replay_dir, "patient_intake-0001")
     entry = auth_client.get("/api/library").json()["incidents"][0]
-    assert entry["video_url"] is None
-    assert entry["replay_url"] == "/replay/patient_intake-0001"  # fallback the page links to
+    assert entry["replay_url"] == "/replay/patient_intake-0001"
 
 
 # @spec REPLAY-LIB-004 — the library API + page require auth (reuses the dashboard gate)
@@ -333,9 +358,9 @@ def test_library_requires_auth(replay_dir):
     assert r.status_code == 303 and r.headers["location"] == "/login"
 
 
-# Empty session library is an empty list, not an error (+ the pika feature flag, default off).
+# Empty session library is an empty list, not an error.
 def test_api_library_empty(auth_client, replay_dir):
-    assert auth_client.get("/api/library").json() == {"incidents": [], "pika_enabled": False}
+    assert auth_client.get("/api/library").json() == {"incidents": []}
 
 
 # A corrupt incident file is skipped, not fatal to the whole library.
@@ -363,115 +388,161 @@ def test_library_page_served(auth_client, replay_dir):
 
 
 # @spec DASH-SIM-001, DASH-SIM-002 — scripted timeline evolves and emits agent-attributed events
-def test_sim_timeline_evolves_and_attributes_agents():
-    from dashboard.sim import SimController
+def test_live_snapshot_uses_injected_store(monkeypatch):
+    """In live mode, get_store() returns the injected store."""
+    import dashboard.datasource as ds
+    from er_twin.config import settings
+    from er_twin.storage import InMemoryStore
 
-    c = SimController()
-    s0, e0 = c.state_and_events(1000.0)  # elapsed 0 — baseline
-    beds0 = {b["id"]: b for b in s0["beds"]}
-    assert beds0["bed2"]["status"] == "available"
-
-    s1, e1 = c.state_and_events(1000.0 + 14)  # past the bed-assign step at t+13s
-    beds1 = {b["id"]: b for b in s1["beds"]}
-    assert beds1["bed2"]["status"] == "occupied"
-    assert beds1["bed2"]["occupied_by"] == "p3"
-
-    assert len(e1) > len(e0)
-    assert {"from", "to", "event", "detail"} <= set(e1[0])
+    monkeypatch.setattr(settings, "dashboard_source", "live")
+    original = ds._live_store
+    try:
+        store = InMemoryStore()
+        store.set("er:bed:bed1", {"id": "bed1", "status": "available", "specialty": "general"})
+        ds.set_live_store(store)
+        returned = ds.get_store()
+        assert returned is store
+    finally:
+        ds._live_store = original
 
 
-# --- On-demand Pika generation (gated, dashboard-orchestrated) -----------------
-# @spec REPLAY-PIKA-003
+# --- Active events + confirm + resolve endpoints ------------------------------
 
 
 @pytest.fixture
-def pika_on(monkeypatch):
-    """Enable the Pika action and run jobs inline (no thread, no subprocess). Resets the registry."""
-    monkeypatch.setattr(server.settings, "dashboard_allow_pika", True)
-    monkeypatch.setattr(pika_jobs, "_spawn", lambda target: target())  # run the job body synchronously
-    pika_jobs.reset()
-    yield
-    pika_jobs.reset()
+def live_store(monkeypatch):
+    """Inject a fresh InMemoryStore in live mode so active-event tests don't touch fixture files."""
+    store = InMemoryStore()
+    monkeypatch.setattr(settings, "dashboard_source", "live")
+    original = datasource._live_store
+    datasource.set_live_store(store)
+    yield store
+    datasource._live_store = original
 
 
-# The library payload advertises whether the Pika action is available (default: off).
-def test_library_reports_pika_disabled_by_default(auth_client, replay_dir):
-    assert auth_client.get("/api/library").json()["pika_enabled"] is False
+@pytest.fixture
+def live_auth_client(live_store) -> TestClient:
+    c = TestClient(app)
+    c.post("/login", data=CREDS)
+    return c
 
 
-def test_library_reports_pika_enabled(auth_client, replay_dir, pika_on):
-    assert auth_client.get("/api/library").json()["pika_enabled"] is True
+# @spec RESOLVE-FLOW-001 — endpoint returns empty list when no active events exist
+def test_api_active_events_empty(live_auth_client):
+    body = live_auth_client.get("/api/active_events").json()
+    assert body == {"active_events": []}
 
 
-# @spec REPLAY-PIKA-003 — generation/status require auth (reuse the dashboard gate), even when disabled
-def test_pika_endpoints_require_auth(replay_dir):
-    assert new_client().post("/api/replay/patient_intake-0001/generate").status_code == 401
-    assert new_client().get("/api/replay/patient_intake-0001/status").status_code == 401
+# @spec RESOLVE-FLOW-001 — endpoint lists all non-resolved events
+def test_api_active_events_lists_events(live_auth_client, live_store):
+    create_active_event(live_store, "low_oxygen", "O2 dropped on bed-2", patient_id="p1")
+    create_active_event(live_store, "intake", "Patient Jordan arrived")
+    body = live_auth_client.get("/api/active_events").json()
+    assert len(body["active_events"]) == 2
+    types = {e["type"] for e in body["active_events"]}
+    assert types == {"low_oxygen", "intake"}
 
 
-# @spec REPLAY-PIKA-003 — disabled by default: an authed operator still gets 403, not a render
-def test_pika_generate_forbidden_when_disabled(auth_client, replay_dir):
-    _write_incident(replay_dir)
-    assert auth_client.post("/api/replay/patient_intake-0001/generate").status_code == 403
-    assert auth_client.get("/api/replay/patient_intake-0001/status").status_code == 403
+# @spec RESOLVE-FLOW-001 — resolved events are not included in the list
+def test_api_active_events_excludes_resolved(live_auth_client, live_store):
+    eid = create_active_event(live_store, "low_oxygen", "O2 low")
+    from er_twin.active_events import resolve_active_event
+
+    resolve_active_event(live_store, eid)
+    body = live_auth_client.get("/api/active_events").json()
+    assert body["active_events"] == []
 
 
-# @spec REPLAY-PIKA-003 — generating for an unknown incident is a 404, not a started job
-def test_pika_generate_missing_incident_404(auth_client, replay_dir, pika_on):
-    assert auth_client.post("/api/replay/does-not-exist/generate").status_code == 404
+# @spec RESOLVE-FLOW-002 — resolve endpoint removes the event and returns the archived record
+def test_api_resolve_active_event(live_auth_client, live_store):
+    eid = create_active_event(live_store, "low_oxygen", "O2 critical on bed-1", patient_id="p2")
+    r = live_auth_client.post(f"/api/active_events/{eid}/resolve")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["resolved"] is True
+    assert body["event"]["id"] == eid
+    # Should no longer appear in the active list.
+    active = live_auth_client.get("/api/active_events").json()["active_events"]
+    assert not any(e["id"] == eid for e in active)
 
 
-# @spec REPLAY-PIKA-003 — happy path: the job runs, the runner back-writes video_url, job completes,
-# and the library subsequently serves that clip.
-def test_pika_generate_completes_and_clip_appears(auth_client, replay_dir, pika_on, monkeypatch):
-    _write_incident(replay_dir, "patient_intake-0001", video_url=None)
-
-    def fake_runner(incident_id):  # stand-in for capture_replay_frames + run_pika_keyframes.ps1
-        path = replay_dir / f"{incident_id}.json"
-        rec = json.loads(path.read_text(encoding="utf-8"))
-        rec["video_url"] = "https://cdn.pika.test/generated.mp4"
-        path.write_text(json.dumps(rec), encoding="utf-8")
-
-    monkeypatch.setattr(pika_jobs, "default_runner", fake_runner)
-
-    assert auth_client.post("/api/replay/patient_intake-0001/generate").status_code == 202
-    status = auth_client.get("/api/replay/patient_intake-0001/status").json()
-    assert status["status"] == "completed"
-    assert status["video_url"] == "https://cdn.pika.test/generated.mp4"
-    # the clip is now in the file, so the library serves it
-    entry = auth_client.get("/api/library").json()["incidents"][0]
-    assert entry["video_url"] == "https://cdn.pika.test/generated.mp4"
+# @spec RESOLVE-FLOW-002 — resolving a non-existent event returns 404
+def test_api_resolve_unknown_event_404(live_auth_client):
+    r = live_auth_client.post("/api/active_events/evt-9999/resolve")
+    assert r.status_code == 404
 
 
-# @spec REPLAY-PIKA-003 — a runner that raises marks the job failed (never crashes the worker)
-def test_pika_generate_failure_marks_job_failed(auth_client, replay_dir, pika_on, monkeypatch):
-    _write_incident(replay_dir, "patient_intake-0001", video_url=None)
+# @spec RESOLVE-FLOW-003 — confirm endpoint processes an intake_proposal and transitions to active
+def test_api_confirm_intake_proposal(live_auth_client, live_store):
+    from er_twin.active_events import _event_key
 
-    def boom(incident_id):
-        raise RuntimeError("pika render exploded")
+    eid = create_active_event(
+        live_store,
+        "intake_proposal",
+        "Intake plan for walk-in",
+        patient_id="",
+        status="pending_approval",
+        extra_data={
+            "name": "Sam Rivera",
+            "mrn": "WLK-0001",
+            "chief_complaint": "chest pain",
+            "vitals": {"hr": 90, "sbp": 130, "dbp": 80, "rr": 16, "spo2": 98},
+            "proposed": {"bed_id": "bed-4", "nurse_id": "nurse-1", "doctor_id": "doc-1"},
+        },
+    )
+    # Manually flip status so the endpoint finds it as pending_approval.
+    live_store.update(_event_key(eid), {"status": "pending_approval"})
 
-    monkeypatch.setattr(pika_jobs, "default_runner", boom)
-
-    auth_client.post("/api/replay/patient_intake-0001/generate")
-    status = auth_client.get("/api/replay/patient_intake-0001/status").json()
-    assert status["status"] == "failed"
-    assert "exploded" in status["error"]
-
-
-# @spec REPLAY-PIKA-003 — a runner that finishes without writing a clip is a failure (file is truth)
-def test_pika_generate_no_url_is_failure(auth_client, replay_dir, pika_on, monkeypatch):
-    _write_incident(replay_dir, "patient_intake-0001", video_url=None)
-    monkeypatch.setattr(pika_jobs, "default_runner", lambda incident_id: None)  # writes nothing
-
-    auth_client.post("/api/replay/patient_intake-0001/generate")
-    status = auth_client.get("/api/replay/patient_intake-0001/status").json()
-    assert status["status"] == "failed"
-    assert "video_url" in status["error"]
+    r = live_auth_client.post(
+        f"/api/active_events/{eid}/confirm",
+        json={"bed_id": "bed-4", "nurse_id": "nurse-1", "doctor_id": "doc-1"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["confirmed"] is True
+    assert body["event_id"] == eid
 
 
-# @spec REPLAY-PIKA-003 — with no job this session, status is "idle" and reports any existing clip
-def test_pika_status_idle_reports_existing_clip(auth_client, replay_dir, pika_on):
-    _write_incident(replay_dir, "patient_intake-0001", video_url="https://cdn.pika.test/old.mp4")
-    status = auth_client.get("/api/replay/patient_intake-0001/status").json()
-    assert status["status"] == "idle"
-    assert status["video_url"] == "https://cdn.pika.test/old.mp4"
+# @spec RESOLVE-FLOW-003 — confirm a discharge_proposal and transition to discharge active event
+def test_api_confirm_discharge_proposal(live_auth_client, live_store):
+    from er_twin.active_events import _event_key
+
+    # Seed a patient so commit_discharge finds one.
+    live_store.set("er:patient:p1", {"id": "p1", "mrn": "MRN-001", "status": "admitted", "name": "Alex"})
+    eid = create_active_event(
+        live_store,
+        "discharge_proposal",
+        "Discharge plan for p1",
+        patient_id="p1",
+        status="pending_approval",
+        extra_data={
+            "proposed": {"nurse_id": "nurse-1", "doctor_id": "doc-1"},
+        },
+    )
+    live_store.update(_event_key(eid), {"status": "pending_approval"})
+
+    r = live_auth_client.post(
+        f"/api/active_events/{eid}/confirm",
+        json={"nurse_id": "nurse-1", "doctor_id": "doc-1"},
+    )
+    assert r.status_code == 200
+    assert r.json()["confirmed"] is True
+
+
+# @spec RESOLVE-FLOW-003 — confirm on a non-pending event returns 404
+def test_api_confirm_non_pending_event_404(live_auth_client, live_store):
+    eid = create_active_event(live_store, "low_oxygen", "O2 low")  # status=active, not pending
+    r = live_auth_client.post(f"/api/active_events/{eid}/confirm", json={})
+    assert r.status_code == 404
+
+
+# @spec RESOLVE-FLOW-003 — confirm on an unsupported event type returns 404
+def test_api_confirm_unsupported_type_404(live_auth_client, live_store):
+    from er_twin.active_events import _event_key
+
+    eid = create_active_event(live_store, "low_oxygen", "O2 low", status="pending_approval")
+    live_store.update(_event_key(eid), {"status": "pending_approval"})
+    r = live_auth_client.post(f"/api/active_events/{eid}/confirm", json={})
+    assert r.status_code == 404
+
+

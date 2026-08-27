@@ -33,6 +33,9 @@ class MemoryInterface(ABC):
     def recall(self, query: str) -> list[str]:
         """Return a list of relevant prior event texts matching the query."""
 
+    def close(self) -> None:
+        """Release any held connections or resources. Default: no-op."""
+
 
 class IrisMemory(MemoryInterface):
     """Real Iris / Redis Agent Memory implementation.

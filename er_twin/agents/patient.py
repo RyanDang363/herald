@@ -16,7 +16,7 @@ agent's own slot.
 from uagents import Agent, Context
 
 from er_twin.addresses import seed_for
-from er_twin.protocols import PatientBindRequest, PatientBindResponse
+from er_twin.protocols import PatientBindRequest, PatientBindResponse, PatientDischargeRequest, PatientDischargeResponse
 from er_twin.storage import StorageInterface
 
 PATIENT_COUNT = 3
@@ -66,6 +66,14 @@ def bind_slot(store: StorageInterface, slot: int, patient_id: str, record: dict)
     return True
 
 
+def find_patient_slot(store: StorageInterface, patient_id: str) -> int | None:
+    """Return the pool slot currently bound to patient_id, or None if not found."""
+    for slot in range(1, PATIENT_COUNT + 1):
+        if store.get(slot_key(slot)).get("bound_to") == patient_id:
+            return slot
+    return None
+
+
 def can_triage(store: StorageInterface, patient_id: str) -> bool:
     # @spec DOMAIN-STATE-003 — a discharged patient may not be triaged without a fresh intake.
     return store.get(patient_key(patient_id)).get("status") != "discharged"
@@ -75,27 +83,75 @@ def build_agents(store: StorageInterface) -> list[Agent]:
     """Create the pool of PatientAgents, each bound to one slot of the shared store."""
     agents: list[Agent] = []
     for slot in range(1, PATIENT_COUNT + 1):
-        agent = Agent(name=f"er-patient-{slot}", seed=seed_for(agent_id_for(slot)), network="testnet")
+        agent = Agent(
+            name=f"er-patient-{slot}", seed=seed_for(agent_id_for(slot)), network="testnet"
+        )
 
-        def _make_handler(slot_index: int):
+        def _make_handlers(slot_index: int):
             async def on_bind(ctx: Context, sender: str, msg: PatientBindRequest):
                 # @spec INTAKE-BIND-002 — bind this agent's slot and hydrate the record, then reply.
                 bound = bind_slot(store, slot_index, msg.patient_id, msg.record)
                 if bound:
                     ctx.logger.info(f"bound patient {msg.patient_id} to {agent_id_for(slot_index)}")
                 else:
-                    ctx.logger.warning(f"{agent_id_for(slot_index)} busy; cannot bind {msg.patient_id}")
+                    ctx.logger.warning(
+                        f"{agent_id_for(slot_index)} busy; cannot bind {msg.patient_id}"
+                    )
                 await ctx.send(
                     sender,
                     PatientBindResponse(
                         patient_id=msg.patient_id,
                         agent_id=agent_id_for(slot_index),
                         bound=bound,
+                        flow_id=msg.flow_id,
                     ),
                 )
 
-            return on_bind
+            async def on_discharge(ctx: Context, sender: str, msg: PatientDischargeRequest):
+                """Mark the bound patient discharged and record sign-off staff."""
+                rec = store.get(patient_key(msg.patient_id))
+                if not rec or rec.get("status") == "discharged":
+                    await ctx.send(
+                        sender,
+                        PatientDischargeResponse(
+                            patient_id=msg.patient_id, confirmed=False, flow_id=msg.flow_id
+                        ),
+                    )
+                    return
+                store.update(patient_key(msg.patient_id), {"status": "discharged"})
+                signoff = [sid for sid in (msg.nurse_id, msg.doctor_id) if sid]
+                store.update(patient_key(msg.patient_id), {"discharge_signed_by": signoff})
+                # Release the slot so it can be reused for the next intake.
+                store.update(slot_key(slot_index), {"bound_to": None})
 
-        agent.on_message(PatientBindRequest)(_make_handler(slot))
+                from er_twin.display import display as _display
+
+                name = rec.get("name", msg.patient_id)
+                mrn = rec.get("mrn", "")
+                bed_id = rec.get("assigned_bed")
+                team_text = (
+                    " + ".join(_display(sid) for sid in signoff) if signoff else "no staff sign-off"
+                )
+                bed_text = _display(bed_id) if bed_id else "waiting area"
+                confirmation = (
+                    f"Discharge confirmed for {name} ({mrn}) from {bed_text}. "
+                    f"Signed off by {team_text}. Resolve to free bed and staff."
+                )
+                ctx.logger.info(f"discharged patient {msg.patient_id} from slot {slot_index}")
+                await ctx.send(
+                    sender,
+                    PatientDischargeResponse(
+                        patient_id=msg.patient_id,
+                        confirmed=True,
+                        confirmation=confirmation,
+                        flow_id=msg.flow_id,
+                    ),
+                )
+
+            return on_bind, on_discharge
+
+        on_bind, on_discharge = _make_handlers(slot)
+        agent.on_message(PatientBindRequest)(on_bind)
+        agent.on_message(PatientDischargeRequest)(on_discharge)
         agents.append(agent)
     return agents

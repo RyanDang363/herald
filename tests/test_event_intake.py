@@ -145,9 +145,9 @@ def test_run_intake_happy_path_chest_pain():
     assert result["patient_id"] == "p1"
     assert result["error"] is None
     assert result["acuity"] == 2 and result["specialty"] == "cardiology"
-    assert result["bed_id"] == "bed1"            # cardiology bed
+    assert result["bed_id"] == "bed1"  # cardiology bed
     assert result["nurse_id"] == "nurse1"
-    assert result["doctor_id"] == "doc1"         # acuity <= 2 -> doctor paged, specialty-matched
+    assert result["doctor_id"] == "doc1"  # acuity <= 2 -> doctor paged, specialty-matched
     assert store.get("er:patient:p1")["status"] == "admitted"
     assert store.get("er:patient:p1")["care_team"] == ["nurse1", "doc1"]
     # confirmation names patient + care team via display names (INTAKE-FLOW-009)
@@ -175,7 +175,7 @@ def test_run_intake_no_nurse_still_admits():
         store.update(f"er:nurse:{n}", {"available": False})
     result = orchestrator.run_intake(store, *CHEST_PAIN)
     assert result["error"] is None
-    assert result["bed_id"] is not None       # admitted to a bed
+    assert result["bed_id"] is not None  # admitted to a bed
     assert result["nurse_id"] is None
     assert store.get("er:patient:p1")["status"] == "admitted"
     assert "no staff" in result["confirmation"].lower()
@@ -197,7 +197,9 @@ def test_run_intake_pool_full_reports_capacity():
     # @spec INTAKE-BIND-003
     store = _clean_store()
     for slot in range(1, patient.PATIENT_COUNT + 1):
-        patient.bind_slot(store, slot, f"existing{slot}", {"id": f"existing{slot}", "status": "admitted"})
+        patient.bind_slot(
+            store, slot, f"existing{slot}", {"id": f"existing{slot}", "status": "admitted"}
+        )
     result = orchestrator.run_intake(store, *CHEST_PAIN)
     assert result["error"] == "patient_capacity_reached"
     assert result["bed_id"] is None
@@ -211,5 +213,5 @@ def test_run_intake_is_idempotent_on_duplicate():
     first = orchestrator.run_intake(store, *CHEST_PAIN)
     second = orchestrator.run_intake(store, *CHEST_PAIN)
     assert first["patient_id"] == second["patient_id"] == "p1"
-    assert store.list_ids("patient") == ["p1"]   # no duplicate record
+    assert store.list_ids("patient") == ["p1"]  # no duplicate record
     assert second["created"] is False

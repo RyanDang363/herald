@@ -141,9 +141,17 @@ def release_patient_resources(store: StorageInterface, patient_id: str) -> None:
     rec = store.get(patient.patient_key(patient_id))
 
     nurses = {m for m in rec.get("care_team", []) if m.startswith("nurse")}
-    nurses |= {nid for nid in nurse.NURSES if patient_id in store.get(nurse.nurse_key(nid)).get("assignments", [])}
+    nurses |= {
+        nid
+        for nid in nurse.NURSES
+        if patient_id in store.get(nurse.nurse_key(nid)).get("assignments", [])
+    }
     doctors = {m for m in rec.get("care_team", []) if m.startswith("doc")}
-    doctors |= {did for did in doctor.DOCTORS if patient_id in store.get(doctor.doctor_key(did)).get("assignments", [])}
+    doctors |= {
+        did
+        for did in doctor.DOCTORS
+        if patient_id in store.get(doctor.doctor_key(did)).get("assignments", [])
+    }
 
     # Release staff BEFORE the bed: release_nurse reads the patient's assigned_bed to clean an
     # oxygen-dispatch task, which release_bed would otherwise have already nulled.

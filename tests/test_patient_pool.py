@@ -47,7 +47,9 @@ def test_bind_is_idempotent_for_same_patient():
     assert patient.bind_slot(store, slot, "p1", _record("p1")) is True
     assert store.get(patient.slot_key(slot))["bound_to"] == "p1"
     # Only this slot is bound; the rest of the pool stays idle.
-    bound = [s for s in range(1, patient.PATIENT_COUNT + 1) if store.get(patient.slot_key(s))["bound_to"]]
+    bound = [
+        s for s in range(1, patient.PATIENT_COUNT + 1) if store.get(patient.slot_key(s))["bound_to"]
+    ]
     assert bound == [slot]
 
 

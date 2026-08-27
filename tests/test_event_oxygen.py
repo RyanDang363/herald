@@ -26,14 +26,25 @@ def _oxygen_store() -> InMemoryStore:
     for module in (patient, bed, nurse, doctor, equipment):
         module.init_state(store)
     # p2 on bed-3 breathing off oxygen unit o2_1 (pre-drop supply above threshold).
-    store.set("er:patient:p2", {
-        "id": "p2", "name": "Avery Chen", "chief_complaint": "shortness of breath",
-        "acuity": 3, "specialty": "general", "status": "in_treatment",
-        "vitals": {"spo2": 92, "heart_rate": 104}, "assigned_bed": "bed3", "care_team": ["doc2"],
-    })
+    store.set(
+        "er:patient:p2",
+        {
+            "id": "p2",
+            "name": "Avery Chen",
+            "chief_complaint": "shortness of breath",
+            "acuity": 3,
+            "specialty": "general",
+            "status": "in_treatment",
+            "vitals": {"spo2": 92, "heart_rate": 104},
+            "assigned_bed": "bed3",
+            "care_team": ["doc2"],
+        },
+    )
     store.update("er:bed:bed3", {"occupied_by": "p2", "status": "occupied", "equipment": ["o2_1"]})
     store.update("er:equipment:o2_1", {"supply_level": 55, "in_use_by": "p2", "location": "bed-3"})
-    store.update("er:nurse:nurse1", {"available": False, "location": "bed-3", "assignments": ["p2"]})
+    store.update(
+        "er:nurse:nurse1", {"available": False, "location": "bed-3", "assignments": ["p2"]}
+    )
     return store
 
 
@@ -75,9 +86,16 @@ def test_locate_replacement_picks_same_type_above_threshold():
 def test_locate_replacement_sorts_highest_supply_then_id():
     # @spec OXY-FLOW-002 — R2-E deterministic sort.
     store = _oxygen_store()
-    store.set("er:equipment:o2_3", {
-        "id": "o2_3", "type": "oxygen", "supply_level": 88, "in_use_by": None, "location": "storage",
-    })
+    store.set(
+        "er:equipment:o2_3",
+        {
+            "id": "o2_3",
+            "type": "oxygen",
+            "supply_level": 88,
+            "in_use_by": None,
+            "location": "storage",
+        },
+    )
     store.update("er:equipment:o2_2", {"supply_level": 88})  # tie with o2_3 -> id ascending wins
     assert equipment.locate_replacement(store, "oxygen", exclude_id="o2_1") == "o2_2"
     store.update("er:equipment:o2_3", {"supply_level": 95})  # now o2_3 has the most supply
@@ -181,12 +199,16 @@ def test_oxygen_swap_is_idempotent():
     equipment.simulate_oxygen_drop(store, "bed3")
     occ1 = apply_oxygen_swap(store, "o2_1", "o2_2", "bed3", "nurse2")
     snapshot = (
-        store.get("er:equipment:o2_2"), store.get("er:equipment:o2_1"),
-        store.get("er:bed:bed3"), store.get("er:nurse:nurse2"),
+        store.get("er:equipment:o2_2"),
+        store.get("er:equipment:o2_1"),
+        store.get("er:bed:bed3"),
+        store.get("er:nurse:nurse2"),
     )
     occ2 = apply_oxygen_swap(store, "o2_1", "o2_2", "bed3", "nurse2")  # re-apply
     assert occ1 == occ2 == "p2"
     assert (
-        store.get("er:equipment:o2_2"), store.get("er:equipment:o2_1"),
-        store.get("er:bed:bed3"), store.get("er:nurse:nurse2"),
+        store.get("er:equipment:o2_2"),
+        store.get("er:equipment:o2_1"),
+        store.get("er:bed:bed3"),
+        store.get("er:nurse:nurse2"),
     ) == snapshot  # no second mutation

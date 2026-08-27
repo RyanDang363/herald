@@ -42,5 +42,7 @@ def _isolate_ehr_master(tmp_path, monkeypatch):
     master.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(settings, "ehr_master_path", str(master))
     ehr_mod._master_cache.clear()
+    ehr_mod._runtime_new_patients.clear()
     yield
     ehr_mod._master_cache.clear()
+    ehr_mod._runtime_new_patients.clear()

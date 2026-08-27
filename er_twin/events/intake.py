@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from er_twin import active_events, replay
+from er_twin import active_events
 from er_twin.display import display
 from er_twin.events.base import DispatchContext, EventHandler, PendingProposal
 from er_twin.events.helpers import (
@@ -15,12 +15,19 @@ from er_twin.events.helpers import (
     parse_assignment_override,
     synthesize_vitals,
 )
-from er_twin.events.intake_flow import commit_full_intake, plan_intake_proposal
+from er_twin.events.intake_flow import plan_intake_proposal
+from er_twin.intake_flow import IntakeFlow
 
 
 class IntakeHandler(EventHandler):
     key = "intake"
-    keywords = ("patient intake", "admit patient", "new patient arrived", "chest pain", "new patient")
+    keywords = (
+        "patient intake",
+        "admit patient",
+        "new patient arrived",
+        "chest pain",
+        "new patient",
+    )
     mock_reply = (
         "Please provide the patient MRN (e.g. MRN-0005) to begin intake. "
         "After triage I will propose bed, nurse, and doctor assignments for your confirmation."
@@ -47,12 +54,15 @@ class IntakeHandler(EventHandler):
         mrn = extract_mrn(text)
         if not mrn:
             pending = PendingProposal(
-                kind="awaiting_mrn", event_type="intake",
-                sender=dctx.cmd.sender, session_id=dctx.cmd.session_id,
+                kind="awaiting_mrn",
+                event_type="intake",
+                sender=dctx.cmd.sender,
+                session_id=dctx.cmd.session_id,
             )
             dctx.session_pending[dctx.cmd.session_id] = pending
             await dctx.send_chat(
-                dctx.ctx, dctx.cmd.sender,
+                dctx.ctx,
+                dctx.cmd.sender,
                 "Please provide the patient MRN (e.g. MRN-0005) to begin intake.",
                 end_session=False,
             )
@@ -60,24 +70,32 @@ class IntakeHandler(EventHandler):
         complaint = extract_complaint(text, mrn)
         if not complaint:
             pending = PendingProposal(
-                kind="awaiting_complaint", event_type="intake",
-                sender=dctx.cmd.sender, session_id=dctx.cmd.session_id, mrn=mrn,
-                name=ehr_name_for_mrn(mrn), vitals=synthesize_vitals(mrn),
+                kind="awaiting_complaint",
+                event_type="intake",
+                sender=dctx.cmd.sender,
+                session_id=dctx.cmd.session_id,
+                mrn=mrn,
+                name=ehr_name_for_mrn(mrn),
+                vitals=synthesize_vitals(mrn),
             )
             dctx.session_pending[dctx.cmd.session_id] = pending
             await dctx.send_chat(
-                dctx.ctx, dctx.cmd.sender,
+                dctx.ctx,
+                dctx.cmd.sender,
                 f"MRN {mrn} ({pending.name}) noted. What is the chief complaint?",
                 end_session=False,
             )
             return True
-        return await self._propose(dctx, mrn, ehr_name_for_mrn(mrn), complaint, synthesize_vitals(mrn))
+        return await self._propose(
+            dctx, mrn, ehr_name_for_mrn(mrn), complaint, synthesize_vitals(mrn)
+        )
 
     async def _handle_mrn(self, dctx: DispatchContext, pending: PendingProposal, text: str) -> bool:
         mrn = extract_mrn(text) or normalize_text(text).upper()
         if not mrn.startswith("MRN-"):
             await dctx.send_chat(
-                dctx.ctx, pending.sender,
+                dctx.ctx,
+                pending.sender,
                 "I need a valid MRN (e.g. MRN-0005). Please try again.",
                 end_session=False,
             )
@@ -88,36 +106,57 @@ class IntakeHandler(EventHandler):
         dctx.session_pending.pop(pending.session_id, None)
         if not complaint:
             dctx.session_pending[pending.session_id] = PendingProposal(
-                kind="awaiting_complaint", event_type="intake",
-                sender=pending.sender, session_id=pending.session_id,
-                mrn=mrn, name=name, vitals=vitals,
+                kind="awaiting_complaint",
+                event_type="intake",
+                sender=pending.sender,
+                session_id=pending.session_id,
+                mrn=mrn,
+                name=name,
+                vitals=vitals,
             )
             await dctx.send_chat(
-                dctx.ctx, pending.sender,
+                dctx.ctx,
+                pending.sender,
                 f"MRN {mrn} ({name}) noted. What is the chief complaint?",
                 end_session=False,
             )
             return True
-        return await self._propose(dctx, mrn, name, complaint, vitals, pending.session_id, pending.sender)
+        return await self._propose(
+            dctx, mrn, name, complaint, vitals, pending.session_id, pending.sender
+        )
 
-    async def _handle_complaint(self, dctx: DispatchContext, pending: PendingProposal, text: str) -> bool:
+    async def _handle_complaint(
+        self, dctx: DispatchContext, pending: PendingProposal, text: str
+    ) -> bool:
         complaint = extract_complaint(text, pending.mrn) or normalize_text(text)
         if len(complaint) < 3:
             await dctx.send_chat(
-                dctx.ctx, pending.sender,
+                dctx.ctx,
+                pending.sender,
                 "Please describe the chief complaint (e.g. chest pain, ankle injury).",
                 end_session=False,
             )
             return True
         dctx.session_pending.pop(pending.session_id, None)
         return await self._propose(
-            dctx, pending.mrn, pending.name, complaint, pending.vitals,
-            pending.session_id, pending.sender,
+            dctx,
+            pending.mrn,
+            pending.name,
+            complaint,
+            pending.vitals,
+            pending.session_id,
+            pending.sender,
         )
 
     async def _propose(
-        self, dctx: DispatchContext, mrn: str, name: str, complaint: str, vitals: dict,
-        session_id: str | None = None, sender: str | None = None,
+        self,
+        dctx: DispatchContext,
+        mrn: str,
+        name: str,
+        complaint: str,
+        vitals: dict,
+        session_id: str | None = None,
+        sender: str | None = None,
     ) -> bool:
         store = dctx.store
         assert store is not None
@@ -154,22 +193,38 @@ class IntakeHandler(EventHandler):
         )
 
         pending = PendingProposal(
-            kind="intake_confirm", event_type="intake",
-            sender=user, session_id=sid, mrn=mrn, name=plan["name"],
-            chief_complaint=complaint, vitals=vitals, patient_id="",
-            acuity=plan["acuity"], specialty=plan["specialty"], proposed=proposed,
+            kind="intake_confirm",
+            event_type="intake",
+            sender=user,
+            session_id=sid,
+            mrn=mrn,
+            name=plan["name"],
+            chief_complaint=complaint,
+            vitals=vitals,
+            patient_id="",
+            acuity=plan["acuity"],
+            specialty=plan["specialty"],
+            proposed=proposed,
             active_event_id=evt_id,
         )
         dctx.session_pending[sid] = pending
         msg = format_proposal(
-            plan["name"], mrn, plan["acuity"], plan["specialty"],
-            proposed["bed_id"], proposed["nurse_id"], proposed["doctor_id"], display,
+            plan["name"],
+            mrn,
+            plan["acuity"],
+            plan["specialty"],
+            proposed["bed_id"],
+            proposed["nurse_id"],
+            proposed["doctor_id"],
+            display,
             available=available,
         )
         await dctx.send_chat(dctx.ctx, user, msg, end_session=False)
         return True
 
-    async def _handle_confirm(self, dctx: DispatchContext, pending: PendingProposal, text: str) -> bool:
+    async def _handle_confirm(
+        self, dctx: DispatchContext, pending: PendingProposal, text: str
+    ) -> bool:
         store = dctx.store
         assert store is not None
         proposed = dict(pending.proposed)
@@ -179,54 +234,33 @@ class IntakeHandler(EventHandler):
                 proposed.update({k: v for k, v in override.items() if v})
             else:
                 await dctx.send_chat(
-                    dctx.ctx, pending.sender,
+                    dctx.ctx,
+                    pending.sender,
                     'Reply "confirm" to accept the proposal, or "assign doc1 nurse2 bed3" to override.',
                     end_session=False,
                 )
                 return True
         dctx.session_pending.pop(pending.session_id, None)
-        lines: list[dict] = []
 
-        def capture(action, target, detail):
-            dctx.record_milestone(
-                lines, store, "intake", replay.actor_for(action), action, target, **detail,
-            )
+        # Record the sender so the terminal _finish_intake can route the reply back.
+        dctx.session_senders.remember(dctx.cmd.session_id, pending.sender)
 
-        dctx.record_milestone(lines, store, "intake", "orchestrator", "intake_received", None, mrn=pending.mrn)
-        # Patient record is created here for the first time (deferred from plan phase).
-        outcome = commit_full_intake(
-            store, pending.name, pending.chief_complaint, pending.vitals, pending.mrn,
-            proposed.get("bed_id"), proposed.get("nurse_id"), proposed.get("doctor_id"),
-            on_milestone=capture,
+        # Build the IntakeFlow correlation object and kick off the async pipeline.
+        from er_twin.agents.orchestrator import _start_intake_flow
+
+        flow = IntakeFlow(
+            flow_id=dctx.cmd.flow_id,
+            chat_sender=pending.sender,
+            session_id=dctx.cmd.session_id,
+            name=pending.name,
+            chief_complaint=pending.chief_complaint,
+            vitals=pending.vitals or {},
+            mrn=pending.mrn or "",
+            preferred_bed_id=proposed.get("bed_id"),
+            preferred_nurse_id=proposed.get("nurse_id"),
+            preferred_doctor_id=proposed.get("doctor_id"),
+            active_event_id=pending.active_event_id or "",
         )
-        if outcome.get("error") in ("duplicate", "patient_capacity_reached"):
-            await dctx.send_chat(dctx.ctx, pending.sender, outcome["confirmation"])
-            return True
-
-        patient_id = outcome["patient_id"]
-        incident_id = dctx.emit_replay(dctx.ctx, "intake", lines)
-
-        # Promote the pending_approval event to active and stamp the now-known patient_id.
-        if pending.active_event_id:
-            promoted = active_events.confirm_pending_proposal(
-                store, pending.active_event_id, outcome["confirmation"], new_type="intake",
-            )
-            if promoted:
-                from er_twin.active_events import _event_key
-                store.update(_event_key(pending.active_event_id), {"patient_id": patient_id})
-            evt_id = pending.active_event_id if promoted else active_events.create_active_event(
-                store, "intake", outcome["confirmation"],
-                patient_id=patient_id, incident_id=incident_id or "",
-            )
-        else:
-            evt_id = active_events.create_active_event(
-                store, "intake", outcome["confirmation"],
-                patient_id=patient_id, incident_id=incident_id or "",
-            )
-
-        dctx.record_memory(dctx.ctx, outcome["confirmation"])
-        await dctx.send_chat(
-            dctx.ctx, pending.sender,
-            f"{outcome['confirmation']}\nCurrent event {evt_id} — resolve when complete.",
-        )
-        return True
+        await _start_intake_flow(dctx.ctx, flow)
+        # The gate is released asynchronously by _finish_intake when all hops complete.
+        return False

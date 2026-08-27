@@ -24,6 +24,21 @@ ADMISSIONS_ADDRESS = address_for("admissions")
 TRIAGE_ADDRESS = address_for("triage")
 
 
-def pool_address(role: str, index: int) -> str:
-    """Address for one member of an entity pool, e.g. pool_address('bed', 1)."""
-    return address_for(f"{role}-{index}")
+def bed_address(bed_id: str) -> str:
+    """Address for a specific bed agent, e.g. bed_address('bed1')."""
+    return address_for(bed_id)
+
+
+def nurse_address(nurse_id: str) -> str:
+    """Address for a specific nurse agent, e.g. nurse_address('nurse1')."""
+    return address_for(nurse_id)
+
+
+def doctor_address(doctor_id: str) -> str:
+    """Address for a specific doctor agent, e.g. doctor_address('doc1')."""
+    return address_for(doctor_id)
+
+
+def patient_agent_address(slot: int) -> str:
+    """Address for a specific patient pool agent, e.g. patient_agent_address(1)."""
+    return address_for(f"patient-{slot}")

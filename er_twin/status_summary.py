@@ -21,11 +21,13 @@ def _active_patients(store: StorageInterface) -> list[dict]:
 def build_status_summary(store: StorageInterface, active_o2_alert_beds: list[str]) -> str:
     active = _active_patients(store)
     occupied_beds = [
-        bid for bid in store.list_ids("bed")
+        bid
+        for bid in store.list_ids("bed")
         if store.get(bed.bed_key(bid)).get("status") == "occupied"
     ]
     free_nurses = sum(
-        1 for nid in store.list_ids("nurse")
+        1
+        for nid in store.list_ids("nurse")
         if store.get(nurse.nurse_key(nid)).get("available") is True
     )
     if not active and not occupied_beds:

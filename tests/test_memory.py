@@ -17,10 +17,33 @@ from er_twin.memory import IrisMemory, MemoryInterface, NoopMemory, make_memory
 # ------------------------------------------------------------------
 
 _HAS_IRIS = all(
-    os.getenv(v)
-    for v in ("AGENT_MEMORY_BASE_URL", "AGENT_MEMORY_STORE_ID", "AGENT_MEMORY_API_KEY")
+    os.getenv(v) for v in ("AGENT_MEMORY_BASE_URL", "AGENT_MEMORY_STORE_ID", "AGENT_MEMORY_API_KEY")
 )
-_SKIP_IRIS = pytest.mark.skipif(not _HAS_IRIS, reason="AGENT_MEMORY_* vars not set")
+
+
+def _check_iris_reachable() -> str | None:
+    """Return a skip reason if the Iris store is unreachable, else None.
+
+    Uses a lightweight SDK probe (record_event) rather than a plain HTTP GET
+    so that backend failures (e.g. Redis Cloud DNS unavailable, 424) are
+    caught here and cause a clean skip rather than a loud test failure.
+    """
+    if not _HAS_IRIS:
+        return "AGENT_MEMORY_* vars not set"
+    try:
+        mem = IrisMemory(
+            base_url=os.environ["AGENT_MEMORY_BASE_URL"],
+            store_id=os.environ["AGENT_MEMORY_STORE_ID"],
+            api_key=os.environ["AGENT_MEMORY_API_KEY"],
+        )
+        mem.record_event("__connectivity_check__")
+        return None
+    except Exception as exc:  # noqa: BLE001
+        return f"Iris store unreachable: {exc}"
+
+
+_SKIP_IRIS_REASON = _check_iris_reachable()
+_SKIP_IRIS = pytest.mark.skipif(bool(_SKIP_IRIS_REASON), reason=_SKIP_IRIS_REASON or "")
 
 # ------------------------------------------------------------------
 # NoopMemory tests (always run)
@@ -78,7 +101,9 @@ def test_make_memory_returns_iris_when_keys_present(monkeypatch: pytest.MonkeyPa
     import er_twin.config as cfg_module
 
     monkeypatch.setattr(cfg_module.settings, "use_mock", False)
-    monkeypatch.setattr(cfg_module.settings, "agent_memory_base_url", "https://fake.memory.redis.io")
+    monkeypatch.setattr(
+        cfg_module.settings, "agent_memory_base_url", "https://fake.memory.redis.io"
+    )
     monkeypatch.setattr(cfg_module.settings, "agent_memory_store_id", "fakestoreid")
     monkeypatch.setattr(cfg_module.settings, "agent_memory_api_key", "fakekey")
     mem = make_memory()

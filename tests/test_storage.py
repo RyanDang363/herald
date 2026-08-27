@@ -15,7 +15,6 @@ from er_twin.storage import InMemoryStore, RedisStore, StorageInterface
 # ------------------------------------------------------------------
 
 _REDIS_URL = os.getenv("REDIS_URL", "")
-_SKIP_REDIS = pytest.mark.skipif(not _REDIS_URL, reason="REDIS_URL not set")
 
 # Unique key prefix so parallel test runs don't collide on the real DB.
 _TEST_PREFIX_KEY = "er:__test__"
@@ -26,8 +25,28 @@ def mem_store() -> InMemoryStore:
     return InMemoryStore()
 
 
+def _check_redis_reachable() -> str | None:
+    """Return a skip reason if Redis is unreachable, else None."""
+    if not _REDIS_URL:
+        return "REDIS_URL not set"
+    try:
+        import redis as _redis
+
+        client = _redis.from_url(_REDIS_URL, socket_connect_timeout=2)
+        client.ping()
+        return None
+    except Exception as exc:  # noqa: BLE001
+        return f"Redis unreachable: {exc}"
+
+
+_SKIP_REDIS_REASON = _check_redis_reachable()
+_SKIP_REDIS = pytest.mark.skipif(bool(_SKIP_REDIS_REASON), reason=_SKIP_REDIS_REASON or "")
+
+
 @pytest.fixture()
 def redis_store() -> RedisStore:
+    if _SKIP_REDIS_REASON:
+        pytest.skip(_SKIP_REDIS_REASON)
     store = RedisStore(_REDIS_URL)
     # clean up any test keys before and after each test
     _flush_test_keys(store)
@@ -48,6 +67,7 @@ def _flush_test_keys(store: RedisStore) -> None:
 # ------------------------------------------------------------------
 # parametrized helpers
 # ------------------------------------------------------------------
+
 
 def run_set_and_get(store: StorageInterface) -> None:
     store.set("er:patient:p1", {"name": "Jordan", "status": "waiting"})
@@ -97,6 +117,7 @@ def run_publish_appends(store: StorageInterface) -> None:
 # InMemoryStore tests (always run)
 # ------------------------------------------------------------------
 
+
 def test_mem_set_and_get(mem_store: InMemoryStore) -> None:
     run_set_and_get(mem_store)
 
@@ -133,6 +154,7 @@ def test_mem_publish_collects_messages(mem_store: InMemoryStore) -> None:
 # ------------------------------------------------------------------
 # RedisStore contract tests (skipped without REDIS_URL)
 # ------------------------------------------------------------------
+
 
 @_SKIP_REDIS
 def test_redis_set_and_get(redis_store: RedisStore) -> None:
@@ -174,13 +196,16 @@ def test_redis_publish_writes_to_stream(redis_store: RedisStore) -> None:
 @_SKIP_REDIS
 def test_redis_type_roundtrip(redis_store: RedisStore) -> None:
     """Bool, int, list, None must survive the JSON encode/decode round-trip."""
-    redis_store.set("er:patient:p1", {
-        "name": "Jordan",
-        "acuity": 2,
-        "available": True,
-        "care_team": ["nurse1"],
-        "assigned_bed": None,
-    })
+    redis_store.set(
+        "er:patient:p1",
+        {
+            "name": "Jordan",
+            "acuity": 2,
+            "available": True,
+            "care_team": ["nurse1"],
+            "assigned_bed": None,
+        },
+    )
     record = redis_store.get("er:patient:p1")
     assert record["acuity"] == 2
     assert record["available"] is True
