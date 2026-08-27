@@ -24,6 +24,7 @@ from er_twin.storage import InMemoryStore
 # Fakes
 # ---------------------------------------------------------------------------
 
+
 class FakeMemory(MemoryInterface):
     """Records every event + serves canned recall results, so wiring is observable in-process."""
 
@@ -61,6 +62,7 @@ def _master(tmp_path: pathlib.Path, data: dict) -> pathlib.Path:
 # EHR-FLOW-001 — MRN extraction from chat text
 # ---------------------------------------------------------------------------
 
+
 def test_extract_mrn_finds_token():
     # @spec EHR-FLOW-001
     assert orchestrator.extract_mrn("Returning patient MRN-0007 with chest pain") == "MRN-0007"
@@ -80,14 +82,21 @@ def test_extract_mrn_absent_returns_empty():
 # EHR-FLOW-002 — AdmissionsAgent enriches the record from the EHR at intake
 # ---------------------------------------------------------------------------
 
+
 def test_intake_enriches_returning_patient_history(tmp_path):
     # @spec EHR-FLOW-002
-    _master(tmp_path, {
-        "MRN-0001": {
-            "mrn": "MRN-0001", "name": "Jordan Lee", "medications": ["warfarin"],
-            "conditions": ["atrial fibrillation"], "allergies": ["penicillin"],
-        }
-    })
+    _master(
+        tmp_path,
+        {
+            "MRN-0001": {
+                "mrn": "MRN-0001",
+                "name": "Jordan Lee",
+                "medications": ["warfarin"],
+                "conditions": ["atrial fibrillation"],
+                "allergies": ["penicillin"],
+            }
+        },
+    )
     store = InMemoryStore()
     pid, record, created = admissions.intake(
         store, "Jordan Lee", "chest pain", {"spo2": 96}, mrn="MRN-0001"
@@ -137,6 +146,7 @@ def test_intake_name_dedupe_still_works_without_mrn(tmp_path):
 # MEM-FLOW-001 / MEM-ERR-001 — record_event seam is wired + non-fatal
 # ---------------------------------------------------------------------------
 
+
 def test_record_memory_appends_event():
     # @spec MEM-FLOW-001
     fake = FakeMemory()
@@ -161,9 +171,12 @@ def test_record_memory_swallows_backend_error():
 # MEM-FLOW-002 — summary folds recalled facts (and stays unchanged under empty recall)
 # ---------------------------------------------------------------------------
 
+
 def _summary_store() -> InMemoryStore:
     store = InMemoryStore()
-    store.set("er:patient:p1", {"id": "p1", "name": "Avery Chen", "status": "in_treatment", "acuity": 3})
+    store.set(
+        "er:patient:p1", {"id": "p1", "name": "Avery Chen", "status": "in_treatment", "acuity": 3}
+    )
     store.set("er:bed:bed3", {"id": "bed3", "status": "occupied"})
     store.set("er:nurse:nurse2", {"id": "nurse2", "available": True})
     return store
@@ -190,15 +203,18 @@ def test_compose_summary_unchanged_when_no_recall():
 import pytest  # noqa: E402
 
 
-@pytest.mark.parametrize("raw,expected", [
-    ("intake", "intake"),
-    ("oxygen", "oxygen"),
-    ("summary", "summary"),
-    ("ping", "ping"),
-    ("unknown", "unknown"),
-    ("The user wants a status summary.", "summary"),  # tolerant of a wrapped token
-    ("intent: oxygen", "oxygen"),
-])
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("intake", "intake"),
+        ("oxygen", "oxygen"),
+        ("summary", "summary"),
+        ("ping", "ping"),
+        ("unknown", "unknown"),
+        ("The user wants a status summary.", "summary"),  # tolerant of a wrapped token
+        ("intent: oxygen", "oxygen"),
+    ],
+)
 def test_parse_llm_intent_maps_known_tokens(raw, expected):
     # @spec ORCH-LLM-001
     assert orchestrator._parse_llm_intent(raw) == expected
@@ -224,7 +240,9 @@ def test_resolve_command_falls_back_to_mock_on_llm_error(monkeypatch):
     import er_twin.config as cfg
 
     monkeypatch.setattr(cfg.settings, "use_mock", False)
-    monkeypatch.setattr(orchestrator, "_resolve_via_llm", lambda text: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        orchestrator, "_resolve_via_llm", lambda text: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     assert orchestrator.resolve_command("A new patient arrived with chest pain") == "intake"
 
 
@@ -236,12 +254,21 @@ def test_resolve_command_falls_back_to_mock_on_llm_error(monkeypatch):
 _ADDR = "agent1qty576zgxtvhugg4a4gr7pdzrhcq89g78f3kszhmd70a9ftlsamcj6a6h3w"
 
 
-@pytest.mark.parametrize("raw, expected", [
-    (f"@{_ADDR} A new patient arrived with chest pain", "A new patient arrived with chest pain"),
-    (f"  @{_ADDR}   Show me what's happening in the ER", "Show me what's happening in the ER"),
-    ("A new patient arrived with chest pain", "A new patient arrived with chest pain"),  # no mention → no-op
-    (f"@{_ADDR} ", ""),  # mention only
-])
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (
+            f"@{_ADDR} A new patient arrived with chest pain",
+            "A new patient arrived with chest pain",
+        ),
+        (f"  @{_ADDR}   Show me what's happening in the ER", "Show me what's happening in the ER"),
+        (
+            "A new patient arrived with chest pain",
+            "A new patient arrived with chest pain",
+        ),  # no mention → no-op
+        (f"@{_ADDR} ", ""),  # mention only
+    ],
+)
 def test_strip_agent_mention(raw, expected):
     # @spec ORCH-CHAT-002 — leading uAgents routing mention removed; otherwise text untouched.
     assert orchestrator.strip_agent_mention(raw) == expected
@@ -255,14 +282,20 @@ def test_strip_agent_mention_is_idempotent():
 
 def test_strip_agent_mention_keeps_non_agent_at_sign():
     # @spec ORCH-CHAT-002 — only an "@agent1..." mention is routing noise; a stray '@' stays.
-    assert orchestrator.strip_agent_mention("email me @ noon about chest pain") == "email me @ noon about chest pain"
+    assert (
+        orchestrator.strip_agent_mention("email me @ noon about chest pain")
+        == "email me @ noon about chest pain"
+    )
 
 
-@pytest.mark.parametrize("text", [
-    "A new patient arrived with chest pain",
-    "a new patient arrived with chest pain please",  # casing + trailing words
-    f"@{_ADDR} A new patient arrived with chest pain",  # backstop: mention survived
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "A new patient arrived with chest pain",
+        "a new patient arrived with chest pain please",  # casing + trailing words
+        f"@{_ADDR} A new patient arrived with chest pain",  # backstop: mention survived
+    ],
+)
 def test_lookup_mock_intake_finds_jordan_lee(text):
     # @spec INTAKE-FLOW-001 — the chest-pain trigger selects the Jordan Lee payload, never "Unknown Patient".
     data = orchestrator.lookup_mock_intake(text)
@@ -278,13 +311,18 @@ def test_lookup_mock_intake_returns_none_for_unrelated_text():
 # DASH-SYS-003 — er:events stream line → dashboard display row
 # ---------------------------------------------------------------------------
 
+
 def test_dashboard_event_row_maps_replay_line():
     # @spec DASH-SYS-003
     from dashboard.datasource import _event_row
 
     line = {
-        "seq": 3, "event": "intake", "actor": "bed", "action": "bed_assigned",
-        "target": "bed1", "detail": {"patient": "p3"},
+        "seq": 3,
+        "event": "intake",
+        "actor": "bed",
+        "action": "bed_assigned",
+        "target": "bed1",
+        "detail": {"patient": "p3"},
     }
     row = _event_row("1718900000000-0", line)
     assert set(row) >= {"ts", "event", "detail"}
@@ -297,6 +335,7 @@ def test_dashboard_event_row_maps_replay_line():
 # ---------------------------------------------------------------------------
 # Test fixtures / shims
 # ---------------------------------------------------------------------------
+
 
 class _DummyCtx:
     """Minimal Context stand-in exposing only `logger` (with the methods the seam touches)."""

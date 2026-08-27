@@ -17,10 +17,30 @@ from er_twin.memory import IrisMemory, MemoryInterface, NoopMemory, make_memory
 # ------------------------------------------------------------------
 
 _HAS_IRIS = all(
-    os.getenv(v)
-    for v in ("AGENT_MEMORY_BASE_URL", "AGENT_MEMORY_STORE_ID", "AGENT_MEMORY_API_KEY")
+    os.getenv(v) for v in ("AGENT_MEMORY_BASE_URL", "AGENT_MEMORY_STORE_ID", "AGENT_MEMORY_API_KEY")
 )
-_SKIP_IRIS = pytest.mark.skipif(not _HAS_IRIS, reason="AGENT_MEMORY_* vars not set")
+
+
+def _check_iris_reachable() -> str | None:
+    """Return a skip reason if the Iris API is unreachable, else None."""
+    if not _HAS_IRIS:
+        return "AGENT_MEMORY_* vars not set"
+    try:
+        import httpx
+
+        resp = httpx.get(
+            os.environ.get("AGENT_MEMORY_BASE_URL", ""),
+            timeout=3,
+        )
+        if resp.status_code >= 500:
+            return f"Iris API returned {resp.status_code}"
+        return None
+    except Exception as exc:  # noqa: BLE001
+        return f"Iris API unreachable: {exc}"
+
+
+_SKIP_IRIS_REASON = _check_iris_reachable()
+_SKIP_IRIS = pytest.mark.skipif(bool(_SKIP_IRIS_REASON), reason=_SKIP_IRIS_REASON or "")
 
 # ------------------------------------------------------------------
 # NoopMemory tests (always run)
@@ -78,7 +98,9 @@ def test_make_memory_returns_iris_when_keys_present(monkeypatch: pytest.MonkeyPa
     import er_twin.config as cfg_module
 
     monkeypatch.setattr(cfg_module.settings, "use_mock", False)
-    monkeypatch.setattr(cfg_module.settings, "agent_memory_base_url", "https://fake.memory.redis.io")
+    monkeypatch.setattr(
+        cfg_module.settings, "agent_memory_base_url", "https://fake.memory.redis.io"
+    )
     monkeypatch.setattr(cfg_module.settings, "agent_memory_store_id", "fakestoreid")
     monkeypatch.setattr(cfg_module.settings, "agent_memory_api_key", "fakekey")
     mem = make_memory()

@@ -58,7 +58,9 @@ async def check(ctx: Context):
         print("SWAP OK: real async oxygen flow completed end-to-end")
         print(f"  o2_2.in_use_by={o2_2.get('in_use_by')} location={o2_2.get('location')}")
         print(f"  o2_1.in_use_by={o2_1.get('in_use_by')} needs_restock={o2_1.get('needs_restock')}")
-        print(f"  bed3.equipment={bed3.get('equipment')}  p2.spo2={p2.get('vitals', {}).get('spo2')}")
+        print(
+            f"  bed3.equipment={bed3.get('equipment')}  p2.spo2={p2.get('vitals', {}).get('spo2')}"
+        )
         print(f"  nurse2.available={nurse2.get('available')} location={nurse2.get('location')}")
         print(f"  in_flight_o2_dispatches={orch.in_flight_o2_dispatches}")  # should be cleared
         os._exit(0)

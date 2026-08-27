@@ -30,7 +30,8 @@ def main(argv: list[str]) -> int:
         record = json.loads(Path(argv[2]).read_text(encoding="utf-8"))
         print(
             replay.requested_clip_duration(
-                record.get("start_ts"), record.get("end_ts"),
+                record.get("start_ts"),
+                record.get("end_ts"),
                 record.get("speed_factor", replay.DEFAULT_SPEED_FACTOR),
             )
         )

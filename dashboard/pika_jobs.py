@@ -86,14 +86,22 @@ def default_runner(incident_id: str) -> None:
     #    Chromium on a free port, so it does not collide with the live dashboard serving this request.
     subprocess.run(
         [sys.executable, "-m", "scripts.capture_replay_frames", incident_id],
-        cwd=_REPO_ROOT, check=True, capture_output=True, text=True, timeout=300,
+        cwd=_REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=300,
     )
     # 2. Drive the verified Pika keyframes path. CurrentUser policy is RemoteSigned, which runs a local
     #    unsigned script via -File without any execution-policy bypass.
     script = _REPO_ROOT / "scripts" / "run_pika_keyframes.ps1"
     subprocess.run(
         ["powershell", "-NoProfile", "-File", str(script), incident_id],
-        cwd=_REPO_ROOT, check=True, capture_output=True, text=True, timeout=900,
+        cwd=_REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=900,
     )
 
 
@@ -120,7 +128,9 @@ def start_job(
         try:
             run(incident_id)
         except subprocess.CalledProcessError as exc:
-            _finish(job, FAILED, error=_tail(exc.stderr) or _tail(exc.stdout) or "render command failed")
+            _finish(
+                job, FAILED, error=_tail(exc.stderr) or _tail(exc.stdout) or "render command failed"
+            )
             return
         except Exception as exc:  # noqa: BLE001 — a failure must mark the job, never kill the worker
             _finish(job, FAILED, error=str(exc))
@@ -129,13 +139,17 @@ def start_job(
         if url:
             _finish(job, COMPLETED, video_url=url)
         else:
-            _finish(job, FAILED, error="render finished but no video_url was written to the incident")
+            _finish(
+                job, FAILED, error="render finished but no video_url was written to the incident"
+            )
 
     _spawn(_work)
     return job
 
 
-def _finish(job: JobState, status: str, video_url: str | None = None, error: str | None = None) -> None:
+def _finish(
+    job: JobState, status: str, video_url: str | None = None, error: str | None = None
+) -> None:
     with _lock:
         job.status = status
         job.video_url = video_url

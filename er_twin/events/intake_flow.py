@@ -47,16 +47,20 @@ def plan_intake_proposal(
         for nid in nurse.NURSES
         if store.get(nurse.nurse_key(nid)).get("available")
     ]
-    available_doctors = [
-        {
-            "id": did,
-            "name": DISPLAY_NAMES.get(did, did),
-            "specialty": store.get(doctor.doctor_key(did)).get("specialty", ""),
-            "load": store.get(doctor.doctor_key(did)).get("load", 0),
-        }
-        for did in doctor.DOCTORS
-        if store.get(doctor.doctor_key(did)).get("available")
-    ] if acuity <= 2 else []
+    available_doctors = (
+        [
+            {
+                "id": did,
+                "name": DISPLAY_NAMES.get(did, did),
+                "specialty": store.get(doctor.doctor_key(did)).get("specialty", ""),
+                "load": store.get(doctor.doctor_key(did)).get("load", 0),
+            }
+            for did in doctor.DOCTORS
+            if store.get(doctor.doctor_key(did)).get("available")
+        ]
+        if acuity <= 2
+        else []
+    )
 
     return {
         "error": None,
@@ -160,7 +164,9 @@ def commit_full_intake(
     team = [sid for sid in (result["nurse_id"], result["doctor_id"]) if sid]
     store.update(patient.patient_key(patient_id), {"care_team": team})
     log("intake_complete", patient_id)
-    result["confirmation"] = _format_confirmation(name, acuity, specialty, bed_id, result["nurse_id"], result["doctor_id"])
+    result["confirmation"] = _format_confirmation(
+        name, acuity, specialty, bed_id, result["nurse_id"], result["doctor_id"]
+    )
     return result
 
 
@@ -224,7 +230,9 @@ def commit_intake_assignments(
     team = [sid for sid in (result["nurse_id"], result["doctor_id"]) if sid]
     store.update(patient.patient_key(patient_id), {"care_team": team})
     log("intake_complete", patient_id)
-    result["confirmation"] = _format_confirmation(name, acuity, specialty, bed_id, result["nurse_id"], result["doctor_id"])
+    result["confirmation"] = _format_confirmation(
+        name, acuity, specialty, bed_id, result["nurse_id"], result["doctor_id"]
+    )
     return result
 
 

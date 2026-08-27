@@ -41,7 +41,9 @@ class TriageRequest(Model):
 class TriageResponse(Model):
     patient_id: str
     acuity: int
-    specialty: str = "general"  # set by Triage; drives bed specialty + doctor paging (decision Gap 1)
+    specialty: str = (
+        "general"  # set by Triage; drives bed specialty + doctor paging (decision Gap 1)
+    )
 
 
 class BedAssignRequest(Model):

@@ -22,7 +22,10 @@ DEFAULT_BRIEF = Path("out") / replay.LATEST_BRIEF_FILENAME
 def main(argv: list[str]) -> int:
     brief_path = Path(argv[1]) if len(argv) > 1 else DEFAULT_BRIEF
     if not brief_path.exists():
-        print(f"error: brief not found: {brief_path} (run an event first to generate it)", file=sys.stderr)
+        print(
+            f"error: brief not found: {brief_path} (run an event first to generate it)",
+            file=sys.stderr,
+        )
         return 1
 
     brief = json.loads(brief_path.read_text(encoding="utf-8"))

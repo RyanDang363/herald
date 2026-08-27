@@ -13,6 +13,7 @@ from pathlib import Path
 
 from er_twin.config import settings
 from er_twin.storage import InMemoryStore, StorageInterface
+
 ENTITIES: dict[str, str] = {
     "patient": "patients",
     "bed": "beds",

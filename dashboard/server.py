@@ -44,6 +44,7 @@ def _replay_file(incident_id: str) -> Path | None:
     path = _REPLAY_DIR / f"{incident_id}.json"
     return path if path.is_file() else None
 
+
 app = FastAPI(title="ER Twin — Admin Dashboard")
 app.add_middleware(SessionMiddleware, secret_key=settings.dashboard_secret_key)
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")
@@ -178,12 +179,19 @@ def api_active_events(user: str = Depends(require_api)) -> JSONResponse:
 
 
 @app.post("/api/active_events/{event_id}/confirm")
-async def api_confirm_proposal(event_id: str, body: dict, user: str = Depends(require_api)) -> JSONResponse:
+async def api_confirm_proposal(
+    event_id: str, body: dict, user: str = Depends(require_api)
+) -> JSONResponse:
     """Confirm a pending proposal from the dashboard UI (intake or discharge).
 
     Body: { bed_id?, nurse_id, doctor_id }
     """
-    from er_twin.active_events import _event_key, confirm_pending_proposal, create_active_event, get_active_event
+    from er_twin.active_events import (
+        _event_key,
+        confirm_pending_proposal,
+        create_active_event,
+        get_active_event,
+    )
     from er_twin.events.discharge_flow import commit_discharge
     from er_twin.events.intake_flow import commit_full_intake
     from er_twin.storage import make_store
@@ -202,11 +210,16 @@ async def api_confirm_proposal(event_id: str, body: dict, user: str = Depends(re
         doctor_id = body.get("doctor_id") or proposed.get("doctor_id")
         outcome = commit_discharge(store, patient_id, nurse_id, doctor_id)
         promoted = confirm_pending_proposal(
-            store, event_id, outcome["confirmation"], new_type="discharge",
+            store,
+            event_id,
+            outcome["confirmation"],
+            new_type="discharge",
         )
         if not promoted:
             create_active_event(store, "discharge", outcome["confirmation"], patient_id=patient_id)
-        return JSONResponse({"confirmed": True, "summary": outcome["confirmation"], "event_id": event_id})
+        return JSONResponse(
+            {"confirmed": True, "summary": outcome["confirmation"], "event_id": event_id}
+        )
 
     if event_type == "intake_proposal":
         bed_id = body.get("bed_id") or proposed.get("bed_id")
@@ -217,18 +230,27 @@ async def api_confirm_proposal(event_id: str, body: dict, user: str = Depends(re
         mrn = rec.get("mrn", "")
         chief_complaint = rec.get("chief_complaint", "")
         vitals = rec.get("vitals") or {}
-        outcome = commit_full_intake(store, name, chief_complaint, vitals, mrn, bed_id, nurse_id, doctor_id)
+        outcome = commit_full_intake(
+            store, name, chief_complaint, vitals, mrn, bed_id, nurse_id, doctor_id
+        )
         if outcome.get("error"):
             raise HTTPException(status_code=409, detail=outcome["error"])
         real_patient_id = outcome["patient_id"]
         promoted = confirm_pending_proposal(
-            store, event_id, outcome["confirmation"], new_type="intake",
+            store,
+            event_id,
+            outcome["confirmation"],
+            new_type="intake",
         )
         if promoted:
             store.update(_event_key(event_id), {"patient_id": real_patient_id})
         else:
-            create_active_event(store, "intake", outcome["confirmation"], patient_id=real_patient_id)
-        return JSONResponse({"confirmed": True, "summary": outcome["confirmation"], "event_id": event_id})
+            create_active_event(
+                store, "intake", outcome["confirmation"], patient_id=real_patient_id
+            )
+        return JSONResponse(
+            {"confirmed": True, "summary": outcome["confirmation"], "event_id": event_id}
+        )
 
     raise HTTPException(status_code=404, detail="unsupported proposal type")
 
@@ -329,7 +351,9 @@ def api_library(user: str = Depends(require_api)) -> JSONResponse:
 def api_replay_generate(incident_id: str, user: str = Depends(require_api)) -> JSONResponse:
     """Start (or rejoin) an on-demand Pika render for an incident. 403 unless DASHBOARD_ALLOW_PIKA."""
     if not settings.dashboard_allow_pika:
-        raise HTTPException(status_code=403, detail="Pika generation is disabled (set DASHBOARD_ALLOW_PIKA=true)")
+        raise HTTPException(
+            status_code=403, detail="Pika generation is disabled (set DASHBOARD_ALLOW_PIKA=true)"
+        )
     if _replay_file(incident_id) is None:
         raise HTTPException(status_code=404, detail="incident replay not found")
     job = pika_jobs.start_job(incident_id, _REPLAY_DIR)
@@ -340,11 +364,15 @@ def api_replay_generate(incident_id: str, user: str = Depends(require_api)) -> J
 def api_replay_status(incident_id: str, user: str = Depends(require_api)) -> JSONResponse:
     """Poll an incident's render job. Reports the existing clip (idle) when no job has run this session."""
     if not settings.dashboard_allow_pika:
-        raise HTTPException(status_code=403, detail="Pika generation is disabled (set DASHBOARD_ALLOW_PIKA=true)")
+        raise HTTPException(
+            status_code=403, detail="Pika generation is disabled (set DASHBOARD_ALLOW_PIKA=true)"
+        )
     job = pika_jobs.get_job(incident_id)
     if job is None:
         url = pika_jobs.read_video_url(_REPLAY_DIR, incident_id)
-        return JSONResponse({"incident_id": incident_id, "status": pika_jobs.IDLE, "video_url": url, "error": None})
+        return JSONResponse(
+            {"incident_id": incident_id, "status": pika_jobs.IDLE, "video_url": url, "error": None}
+        )
     return JSONResponse(job.as_dict())
 
 

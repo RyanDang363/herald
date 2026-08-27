@@ -75,7 +75,9 @@ def build_agents(store: StorageInterface) -> list[Agent]:
     """Create the pool of PatientAgents, each bound to one slot of the shared store."""
     agents: list[Agent] = []
     for slot in range(1, PATIENT_COUNT + 1):
-        agent = Agent(name=f"er-patient-{slot}", seed=seed_for(agent_id_for(slot)), network="testnet")
+        agent = Agent(
+            name=f"er-patient-{slot}", seed=seed_for(agent_id_for(slot)), network="testnet"
+        )
 
         def _make_handler(slot_index: int):
             async def on_bind(ctx: Context, sender: str, msg: PatientBindRequest):
@@ -84,7 +86,9 @@ def build_agents(store: StorageInterface) -> list[Agent]:
                 if bound:
                     ctx.logger.info(f"bound patient {msg.patient_id} to {agent_id_for(slot_index)}")
                 else:
-                    ctx.logger.warning(f"{agent_id_for(slot_index)} busy; cannot bind {msg.patient_id}")
+                    ctx.logger.warning(
+                        f"{agent_id_for(slot_index)} busy; cannot bind {msg.patient_id}"
+                    )
                 await ctx.send(
                     sender,
                     PatientBindResponse(

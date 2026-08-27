@@ -44,7 +44,9 @@ def find_available_doctor(store: StorageInterface, specialty: str | None = None)
     return available[0] if available else None
 
 
-def assign_doctor(store: StorageInterface, doctor_id: str, patient_id: str, bed_id: str | None = None) -> bool:
+def assign_doctor(
+    store: StorageInterface, doctor_id: str, patient_id: str, bed_id: str | None = None
+) -> bool:
     """Page a doctor: increment load, add the patient; goes unavailable only at the load cap.
 
     @spec INTAKE-FLOW-011 — increment load, add the patient to assignments, return accepted.

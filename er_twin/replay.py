@@ -70,8 +70,11 @@ FRAMES_SUBDIR = "frames"
 # Entity type -> snapshot plural key. Matches the dashboard `snapshot()` shape so the replay page can
 # feed each snapshot's `entities` straight into the shared floor-positioning code (REPLAY-FRAME-001).
 SNAPSHOT_ENTITIES: dict[str, str] = {
-    "patient": "patients", "bed": "beds", "nurse": "nurses",
-    "doctor": "doctors", "equipment": "equipment",
+    "patient": "patients",
+    "bed": "beds",
+    "nurse": "nurses",
+    "doctor": "doctors",
+    "equipment": "equipment",
 }
 
 # Default time compression for the replay clip (decision: 10× — 10 real seconds ≈ 1 video second).
@@ -95,17 +98,33 @@ def _capture_entities(store: StorageInterface) -> dict[str, list[dict]]:
         for entity, plural in SNAPSHOT_ENTITIES.items()
     }
 
+
 # Milestone action -> the agent that owns it, for the timeline `actor` field (cosmetic; LLD §9 examples).
 _ACTOR_BY_ACTION: dict[str, str] = {
-    "intake_received": "orchestrator", "record_created": "admissions", "patient_bound": "orchestrator",
-    "triaged": "triage", "bed_assigned": "bed", "nurse_assigned": "nurse", "doctor_paged": "doctor",
-    "intake_complete": "orchestrator", "patient_capacity_reached": "orchestrator",
-    "no_bed_available": "bed", "no_nurse_available": "nurse", "no_doctor_available": "doctor",
-    "oxygen_drop_simulated": "equipment", "alert_raised": "equipment", "unit_located": "equipment",
-    "nurse_dispatched": "nurse", "oxygen_swap_complete": "orchestrator",
-    "oxygen_event_complete": "orchestrator", "no_replacement_unit_available": "equipment",
-    "no_dispatch_nurse_available": "nurse", "summary_generated": "orchestrator",
-    "event_resolved": "admin", "doctor_assigned": "doctor", "discharge_complete": "orchestrator",
+    "intake_received": "orchestrator",
+    "record_created": "admissions",
+    "patient_bound": "orchestrator",
+    "triaged": "triage",
+    "bed_assigned": "bed",
+    "nurse_assigned": "nurse",
+    "doctor_paged": "doctor",
+    "intake_complete": "orchestrator",
+    "patient_capacity_reached": "orchestrator",
+    "no_bed_available": "bed",
+    "no_nurse_available": "nurse",
+    "no_doctor_available": "doctor",
+    "oxygen_drop_simulated": "equipment",
+    "alert_raised": "equipment",
+    "unit_located": "equipment",
+    "nurse_dispatched": "nurse",
+    "oxygen_swap_complete": "orchestrator",
+    "oxygen_event_complete": "orchestrator",
+    "no_replacement_unit_available": "equipment",
+    "no_dispatch_nurse_available": "nurse",
+    "summary_generated": "orchestrator",
+    "event_resolved": "admin",
+    "doctor_assigned": "doctor",
+    "discharge_complete": "orchestrator",
 }
 
 
@@ -152,8 +171,12 @@ class ReplayRecorder:
         @spec REPLAY-SNAP-002 — keyed by `seq`, so re-capturing the same `seq` overwrites (idempotent).
         """
         record = {
-            "seq": seq, "ts": ts, "action": action, "actor": actor,
-            "target": target, "entities": _capture_entities(store),
+            "seq": seq,
+            "ts": ts,
+            "action": action,
+            "actor": actor,
+            "target": target,
+            "entities": _capture_entities(store),
         }
         self._timeline[seq] = record
         return record
@@ -183,8 +206,12 @@ class ReplayRecorder:
         @spec REPLAY-LOG-002 — `seq` is monotonic per run; no wall-clock field.
         """
         line = {
-            "seq": self._seq, "event": event, "actor": actor,
-            "action": action, "target": target, "detail": detail,
+            "seq": self._seq,
+            "event": event,
+            "actor": actor,
+            "action": action,
+            "target": target,
+            "detail": detail,
         }
         self._seq += 1
         store.publish(EVENTS_CHANNEL, json.dumps(line))
@@ -312,7 +339,9 @@ def build_brief(
         "title": title,
         "summary": summary,
         "severity": severity,
-        "location": f"ER {_bed_display(record.get('assigned_bed'))}" if record.get("assigned_bed") else "ER",
+        "location": f"ER {_bed_display(record.get('assigned_bed'))}"
+        if record.get("assigned_bed")
+        else "ER",
         "patient": patient,
         "timeline": timeline,
         "final_state": final_state,
@@ -336,29 +365,30 @@ def render_pika_prompt(brief: dict) -> str:
     patient = brief.get("patient")
     patient_md = (
         f"- Patient: `{patient['id']}` — {patient['condition']} (ESI-{patient['acuity']})"
-        if patient else "- Patient: none (operations-level incident)"
+        if patient
+        else "- Patient: none (operations-level incident)"
     )
-    return f"""# Pika Replay Brief — {brief['title']}
+    return f"""# Pika Replay Brief — {brief["title"]}
 
-**Incident:** `{brief['incident_id']}` ({brief['incident_type']}) · **Severity:** {brief['severity']} · **Location:** {brief['location']}
+**Incident:** `{brief["incident_id"]}` ({brief["incident_type"]}) · **Severity:** {brief["severity"]} · **Location:** {brief["location"]}
 
 ## Scene
-{brief['summary']}
+{brief["summary"]}
 
 {patient_md}
-- Final state: {brief['final_state']}
+- Final state: {brief["final_state"]}
 
 ## Timeline (synthetic display times)
 {timeline_md}
 
 ## Visual style
-{brief['visual_style']}
+{brief["visual_style"]}
 
 ## Instructions (must follow)
 - Use **synthetic hospital data only** — no gore, **no real people**, no identifiable faces, no real PHI.
 - Produce a safe, cinematic, realistic **hospital-operations replay** suitable for a hackathon demo.
 - Emphasize the **autonomous agent coordination** across the timeline and keep the timeline legible.
-- Requested outputs: {", ".join(brief['pika_outputs_requested'])}.
+- Requested outputs: {", ".join(brief["pika_outputs_requested"])}.
 
 ## Return contract
 Return the asset **URL/ID**, the **task_id** (if the render is async), the **tool used**, and a short
@@ -386,7 +416,11 @@ def write_incident(brief: dict, out_dir: str = "out") -> dict[str, str]:
 
 
 def export_incident(
-    lines: list[dict], incident_id: str, incident_type: str, store: StorageInterface, out_dir: str = "out"
+    lines: list[dict],
+    incident_id: str,
+    incident_type: str,
+    store: StorageInterface,
+    out_dir: str = "out",
 ) -> dict | None:
     """Build the brief from `lines` and write the replay artifacts; return the brief (or None).
 
@@ -506,8 +540,13 @@ def export_incident_timeline(
     if not snapshots:
         return None
     record = build_incident_timeline(
-        snapshots, incident_id, incident_type, title, summary,
-        speed_factor=speed_factor, display=display,
+        snapshots,
+        incident_id,
+        incident_type,
+        title,
+        summary,
+        speed_factor=speed_factor,
+        display=display,
     )
     replay_dir = Path(out_dir) / REPLAY_SUBDIR
     replay_dir.mkdir(parents=True, exist_ok=True)

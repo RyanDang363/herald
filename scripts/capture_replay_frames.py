@@ -32,7 +32,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 def _incident_path(incident_id: str, out_dir: Path) -> Path:
     path = out_dir / replay.REPLAY_SUBDIR / f"{incident_id}.json"
     if not path.is_file():
-        raise SystemExit(f"No replay timeline at {path}. Run an ER event first (Phase 1 writes it).")
+        raise SystemExit(
+            f"No replay timeline at {path}. Run an ER event first (Phase 1 writes it)."
+        )
     return path
 
 
@@ -57,8 +59,16 @@ def _wait_until_up(url: str, timeout: float = 30.0) -> None:
 def _start_server(port: int) -> subprocess.Popen:
     """Start the dashboard so the replay page can fetch /api/replay/{incident}."""
     return subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "dashboard.server:app", "--port", str(port),
-         "--log-level", "warning"],
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "dashboard.server:app",
+            "--port",
+            str(port),
+            "--log-level",
+            "warning",
+        ],
         cwd=str(REPO_ROOT),
     )
 
@@ -89,7 +99,9 @@ def capture(incident_id: str, out_dir: Path, cap: int, port: int | None) -> list
             browser = pw.chromium.launch()
             page = browser.new_page(viewport={"width": 1500, "height": 1000})
             page.goto(f"{base}/replay/{incident_id}", wait_until="networkidle")
-            page.wait_for_function("window.replayApi && window.replayApi.ready === true", timeout=15000)
+            page.wait_for_function(
+                "window.replayApi && window.replayApi.ready === true", timeout=15000
+            )
             shell = page.wait_for_selector(".floor-shell", timeout=15000)
             for i, frame in enumerate(keyframes):
                 ok = page.evaluate("(seq) => window.replayApi.seekToSeq(seq)", frame["seq"])
@@ -99,7 +111,9 @@ def capture(incident_id: str, out_dir: Path, cap: int, port: int | None) -> list
                 dest = frames_dir / f"frame_{i:02d}.png"
                 shell.screenshot(path=str(dest))
                 written.append(dest)
-                print(f"  captured seq {frame['seq']:>2} ({frame.get('action', '')}) -> {dest.name}")
+                print(
+                    f"  captured seq {frame['seq']:>2} ({frame.get('action', '')}) -> {dest.name}"
+                )
             browser.close()
     finally:
         server.terminate()
@@ -113,14 +127,24 @@ def capture(incident_id: str, out_dir: Path, cap: int, port: int | None) -> list
 def main() -> None:
     parser = argparse.ArgumentParser(description="Capture replay keyframe PNGs (Playwright).")
     parser.add_argument("incident_id", help="e.g. patient_intake-0001")
-    parser.add_argument("--out", default=str(REPO_ROOT / "out"), help="out/ dir (default: repo out/)")
-    parser.add_argument("--cap", type=int, default=replay.KEYFRAME_CAP,
-                        help=f"max keyframes (default {replay.KEYFRAME_CAP} — Pika's first+last limit)")
-    parser.add_argument("--port", type=int, default=None, help="dashboard port (default: a free port)")
+    parser.add_argument(
+        "--out", default=str(REPO_ROOT / "out"), help="out/ dir (default: repo out/)"
+    )
+    parser.add_argument(
+        "--cap",
+        type=int,
+        default=replay.KEYFRAME_CAP,
+        help=f"max keyframes (default {replay.KEYFRAME_CAP} — Pika's first+last limit)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=None, help="dashboard port (default: a free port)"
+    )
     args = parser.parse_args()
 
     frames = capture(args.incident_id, Path(args.out), args.cap, args.port)
-    print(f"Wrote {len(frames)} frame(s) to {Path(args.out) / replay.FRAMES_SUBDIR / args.incident_id}")
+    print(
+        f"Wrote {len(frames)} frame(s) to {Path(args.out) / replay.FRAMES_SUBDIR / args.incident_id}"
+    )
 
 
 if __name__ == "__main__":

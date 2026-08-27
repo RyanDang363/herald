@@ -105,6 +105,4 @@ def release_bed(store: StorageInterface, bed_id: str) -> None:
 
 def build_agents(store: StorageInterface) -> list[Agent]:
     """Create one BedAgent per bed. Assignment handlers are added in Phase 3."""
-    return [
-        Agent(name=f"er-{bed_id}", seed=seed_for(bed_id), network="testnet") for bed_id in BEDS
-    ]
+    return [Agent(name=f"er-{bed_id}", seed=seed_for(bed_id), network="testnet") for bed_id in BEDS]

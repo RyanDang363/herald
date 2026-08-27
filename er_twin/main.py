@@ -74,25 +74,55 @@ def seed_baseline(store: StorageInterface) -> None:
     dispatch deterministically picks nurse2); doc2 carrying p2. Patient counter advanced to 2.
     """
     store.set("er:counter:patient", {"value": 2})
-    store.set("er:patient:p1", {
-        "id": "p1", "mrn": "MRN-0001", "name": "Sam Rivera",
-        "chief_complaint": "observation after minor fall",
-        "acuity": 4, "specialty": "general", "status": "in_triage",
-        "vitals": {"heart_rate": 84, "blood_pressure": "128/78", "resp_rate": 16,
-                   "spo2": 98, "temperature_f": 98.4, "pain_score": 3},
-        "assigned_bed": None, "care_team": [],
-    })
-    store.set("er:patient:p2", {
-        "id": "p2", "mrn": "MRN-0002", "name": "Avery Chen",
-        "chief_complaint": "shortness of breath",
-        "acuity": 3, "specialty": "general", "status": "in_treatment",
-        "vitals": {"heart_rate": 104, "blood_pressure": "136/84", "resp_rate": 24,
-                   "spo2": 92, "temperature_f": 99.1, "pain_score": 4},
-        "assigned_bed": "bed3", "care_team": ["nurse1", "doc2"],
-    })
+    store.set(
+        "er:patient:p1",
+        {
+            "id": "p1",
+            "mrn": "MRN-0001",
+            "name": "Sam Rivera",
+            "chief_complaint": "observation after minor fall",
+            "acuity": 4,
+            "specialty": "general",
+            "status": "in_triage",
+            "vitals": {
+                "heart_rate": 84,
+                "blood_pressure": "128/78",
+                "resp_rate": 16,
+                "spo2": 98,
+                "temperature_f": 98.4,
+                "pain_score": 3,
+            },
+            "assigned_bed": None,
+            "care_team": [],
+        },
+    )
+    store.set(
+        "er:patient:p2",
+        {
+            "id": "p2",
+            "mrn": "MRN-0002",
+            "name": "Avery Chen",
+            "chief_complaint": "shortness of breath",
+            "acuity": 3,
+            "specialty": "general",
+            "status": "in_treatment",
+            "vitals": {
+                "heart_rate": 104,
+                "blood_pressure": "136/84",
+                "resp_rate": 24,
+                "spo2": 92,
+                "temperature_f": 99.1,
+                "pain_score": 4,
+            },
+            "assigned_bed": "bed3",
+            "care_team": ["nurse1", "doc2"],
+        },
+    )
     store.update("er:bed:bed3", {"occupied_by": "p2", "status": "occupied", "equipment": ["o2_1"]})
     store.update("er:equipment:o2_1", {"supply_level": 55, "in_use_by": "p2", "location": "bed-3"})
-    store.update("er:nurse:nurse1", {"available": False, "location": "bed-3", "assignments": ["p2"]})
+    store.update(
+        "er:nurse:nurse1", {"available": False, "location": "bed-3", "assignments": ["p2"]}
+    )
     store.update("er:doctor:doc2", {"load": 1, "assignments": ["p2"]})
 
 
@@ -112,7 +142,7 @@ def main() -> None:
     store = make_store()
     memory = make_memory()
     counts = ensure_seeded(store)  # seed + verify the inventory actually landed (self-healing)
-    orch.set_store(store)    # the Orchestrator coordinates intake over this same store
+    orch.set_store(store)  # the Orchestrator coordinates intake over this same store
     orch.set_memory(memory)  # ...and records/recalls ER events through this memory backend
 
     print(f"USE_MOCK             = {settings.use_mock}")

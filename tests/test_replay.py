@@ -53,32 +53,67 @@ def test_incident_id_counts_per_type():
 
 def _intake_store() -> InMemoryStore:
     store = InMemoryStore()
-    store.set("er:patient:p1", {
-        "id": "p1", "name": "Jordan Lee", "chief_complaint": "chest pain", "acuity": 2,
-        "specialty": "cardiology", "status": "admitted", "assigned_bed": "bed1",
-        "care_team": ["nurse1", "doc1"], "vitals": {"spo2": 96},
-    })
+    store.set(
+        "er:patient:p1",
+        {
+            "id": "p1",
+            "name": "Jordan Lee",
+            "chief_complaint": "chest pain",
+            "acuity": 2,
+            "specialty": "cardiology",
+            "status": "admitted",
+            "assigned_bed": "bed1",
+            "care_team": ["nurse1", "doc1"],
+            "vitals": {"spo2": 96},
+        },
+    )
     return store
 
 
 def _intake_lines() -> list[dict]:
     # Deliberately out of seq order to prove build_brief sorts by seq (REPLAY-LOG-002).
     return [
-        {"seq": 2, "event": "intake", "actor": "triage", "action": "triaged", "target": "p1",
-         "detail": {"acuity": 2, "specialty": "cardiology"}},
-        {"seq": 0, "event": "intake", "actor": "orchestrator", "action": "intake_received",
-         "target": None, "detail": {"detail": "chest pain"}},
-        {"seq": 1, "event": "intake", "actor": "admissions", "action": "record_created",
-         "target": "p1", "detail": {}},
-        {"seq": 3, "event": "intake", "actor": "orchestrator", "action": "intake_complete",
-         "target": "p1", "detail": {}},
+        {
+            "seq": 2,
+            "event": "intake",
+            "actor": "triage",
+            "action": "triaged",
+            "target": "p1",
+            "detail": {"acuity": 2, "specialty": "cardiology"},
+        },
+        {
+            "seq": 0,
+            "event": "intake",
+            "actor": "orchestrator",
+            "action": "intake_received",
+            "target": None,
+            "detail": {"detail": "chest pain"},
+        },
+        {
+            "seq": 1,
+            "event": "intake",
+            "actor": "admissions",
+            "action": "record_created",
+            "target": "p1",
+            "detail": {},
+        },
+        {
+            "seq": 3,
+            "event": "intake",
+            "actor": "orchestrator",
+            "action": "intake_complete",
+            "target": "p1",
+            "detail": {},
+        },
     ]
 
 
 def test_build_brief_shape_and_derivation():
     # @spec REPLAY-BRIEF-001
     # @spec REPLAY-BRIEF-004
-    brief = replay.build_brief(_intake_lines(), "patient_intake-0001", "patient_intake", _intake_store())
+    brief = replay.build_brief(
+        _intake_lines(), "patient_intake-0001", "patient_intake", _intake_store()
+    )
 
     assert brief["incident_id"] == "patient_intake-0001"
     assert brief["incident_type"] == "patient_intake"  # one of the three event types
@@ -92,7 +127,9 @@ def test_build_brief_shape_and_derivation():
     assert seqs_in_order == [0, 1, 2, 3]
     assert [e["t"] for e in brief["timeline"]] == ["00:00", "00:05", "00:10", "00:15"]
     assert brief["timeline"][0]["action"] == "intake_received"
-    assert all({"t", "actor", "action", "target", "state_change"} <= set(e) for e in brief["timeline"])
+    assert all(
+        {"t", "actor", "action", "target", "state_change"} <= set(e) for e in brief["timeline"]
+    )
 
 
 def test_severity_from_acuity_mapping():
@@ -106,9 +143,19 @@ def test_severity_from_acuity_mapping():
 
 def test_summary_brief_has_no_patient():
     # @spec REPLAY-BRIEF-004 — er_status_summary maps with no specific patient.
-    lines = [{"seq": 0, "event": "summary", "actor": "orchestrator", "action": "summary_generated",
-              "target": None, "detail": {"text": "2 patients active, 1 bed occupied, 1 nurse free."}}]
-    brief = replay.build_brief(lines, "er_status_summary-0001", "er_status_summary", InMemoryStore())
+    lines = [
+        {
+            "seq": 0,
+            "event": "summary",
+            "actor": "orchestrator",
+            "action": "summary_generated",
+            "target": None,
+            "detail": {"text": "2 patients active, 1 bed occupied, 1 nurse free."},
+        }
+    ]
+    brief = replay.build_brief(
+        lines, "er_status_summary-0001", "er_status_summary", InMemoryStore()
+    )
     assert brief["incident_type"] == "er_status_summary"
     assert brief["patient"] is None
     assert "2 patients active" in brief["summary"]
@@ -140,7 +187,9 @@ def test_export_writes_brief_prompt_and_history(tmp_path):
 def test_export_no_lines_writes_nothing(tmp_path):
     # @spec REPLAY-BRIEF-003 — no event ran -> no empty artifacts.
     out = tmp_path / "out"
-    result = replay.export_incident([], "patient_intake-0001", "patient_intake", InMemoryStore(), out_dir=str(out))
+    result = replay.export_incident(
+        [], "patient_intake-0001", "patient_intake", InMemoryStore(), out_dir=str(out)
+    )
     assert result is None
     assert not out.exists() or not any(out.iterdir())
 
@@ -154,15 +203,21 @@ def test_intake_milestones_map_to_a_coherent_brief(tmp_path):
     store = InMemoryStore()
     for module in (patient, bed, nurse, doctor):
         module.init_state(store)
-    outcome = orchestrator.run_intake(store, "Jordan Lee", "chest pain", {"spo2": 96, "heart_rate": 112})
+    outcome = orchestrator.run_intake(
+        store, "Jordan Lee", "chest pain", {"spo2": 96, "heart_rate": 112}
+    )
 
     rec = replay.ReplayRecorder()
     lines = [
-        rec.log(store, "intake", replay.actor_for(m["action"]), m["action"], m["target"], **m["detail"])
+        rec.log(
+            store, "intake", replay.actor_for(m["action"]), m["action"], m["target"], **m["detail"]
+        )
         for m in outcome["milestones"]
     ]
     out = tmp_path / "out"
-    brief = replay.export_incident(lines, rec.next_incident_id("intake"), "patient_intake", store, out_dir=str(out))
+    brief = replay.export_incident(
+        lines, rec.next_incident_id("intake"), "patient_intake", store, out_dir=str(out)
+    )
 
     assert brief["incident_id"] == "patient_intake-0001"
     assert brief["severity"] == "high"  # ESI-2
@@ -184,7 +239,9 @@ def test_intake_on_milestone_captures_distinct_intermediate_states():
     def capture(action, target, detail):
         actor = replay.actor_for(action)
         line = rec.log(store, "intake", actor, action, target, **detail)
-        rec.snapshot(store, line["seq"], float(line["seq"]), action=action, actor=actor, target=target)
+        rec.snapshot(
+            store, line["seq"], float(line["seq"]), action=action, actor=actor, target=target
+        )
         seqs.append(line["seq"])
 
     orchestrator.run_intake(store, "Jordan Lee", "chest pain", {"spo2": 96}, on_milestone=capture)
@@ -192,7 +249,9 @@ def test_intake_on_milestone_captures_distinct_intermediate_states():
         (s["entities"]["patients"][0]["status"] if s["entities"]["patients"] else None)
         for s in rec.snapshots_for(seqs)
     ]
-    assert "waiting" in statuses and "admitted" in statuses  # state genuinely advanced across snapshots
+    assert (
+        "waiting" in statuses and "admitted" in statuses
+    )  # state genuinely advanced across snapshots
     # More than one distinct state-change frame (else the replay would be a single static image).
     assert len(replay.select_keyframes(rec.timeline, cap=99)) > 2
 
@@ -212,7 +271,9 @@ def test_snapshot_captures_all_entities_with_ts():
     # @spec REPLAY-SNAP-001 — every entity record + a real ts; er:events line shape is NOT touched here.
     store = _snapshot_store()
     rec = replay.ReplayRecorder()
-    snap = rec.snapshot(store, seq=0, ts=1718900000.5, action="record_created", actor="admissions", target="p1")
+    snap = rec.snapshot(
+        store, seq=0, ts=1718900000.5, action="record_created", actor="admissions", target="p1"
+    )
 
     assert set(snap) == {"seq", "ts", "action", "actor", "target", "entities"}
     assert snap["ts"] == 1718900000.5
@@ -275,7 +336,14 @@ def test_log_line_shape_unchanged_by_snapshot_wiring():
     store = _snapshot_store()
     rec = replay.ReplayRecorder()
     line = rec.log(store, "intake", "admissions", "record_created", "p1")
-    rec.snapshot(store, seq=line["seq"], ts=1718900000.0, action="record_created", actor="admissions", target="p1")
+    rec.snapshot(
+        store,
+        seq=line["seq"],
+        ts=1718900000.0,
+        action="record_created",
+        actor="admissions",
+        target="p1",
+    )
     published = _published(store)[-1]
     assert set(published) == {"seq", "event", "actor", "action", "target", "detail"}
     assert "ts" not in published and "timestamp" not in published and "time" not in published
@@ -300,7 +368,9 @@ def test_log_milestone_is_best_effort_on_backend_fault():
 
     orchestrator._replay = replay.ReplayRecorder()
     buf: list[dict] = []
-    line = orchestrator._record_milestone(buf, _PublishBoom(), "intake", "admissions", "record_created", "p1")
+    line = orchestrator._record_milestone(
+        buf, _PublishBoom(), "intake", "admissions", "record_created", "p1"
+    )
     assert line is None and buf == []  # publish failed -> skipped, no exception
 
     orchestrator._replay = replay.ReplayRecorder()
@@ -312,7 +382,9 @@ def test_log_milestone_is_best_effort_on_backend_fault():
 def _intake_snapshots() -> list[dict]:
     store = _snapshot_store()
     rec = replay.ReplayRecorder()
-    rec.snapshot(store, seq=0, ts=1000.0, action="intake_received", actor="orchestrator", target=None)
+    rec.snapshot(
+        store, seq=0, ts=1000.0, action="intake_received", actor="orchestrator", target=None
+    )
     store.update("er:patient:p1", {"status": "admitted", "assigned_bed": "bed1"})
     rec.snapshot(store, seq=1, ts=1006.0, action="bed_assigned", actor="bed", target="bed1")
     rec.snapshot(store, seq=2, ts=1012.0, action="nurse_assigned", actor="nurse", target="nurse1")
@@ -324,9 +396,13 @@ def test_export_timeline_writes_file_with_metadata(tmp_path):
     out = tmp_path / "out"
     names = {"bed1": "bed-1", "nurse1": "Nurse Maya"}
     record = replay.export_incident_timeline(
-        _intake_snapshots(), "patient_intake-0001", "patient_intake",
-        "Chest pain intake", "Jordan Lee admitted to bed-1.",
-        display=lambda x: names.get(x, x), out_dir=str(out),
+        _intake_snapshots(),
+        "patient_intake-0001",
+        "patient_intake",
+        "Chest pain intake",
+        "Jordan Lee admitted to bed-1.",
+        display=lambda x: names.get(x, x),
+        out_dir=str(out),
     )
     path = out / "replay" / "patient_intake-0001.json"
     assert path.exists()
@@ -356,12 +432,12 @@ def test_export_timeline_no_snapshots_writes_nothing(tmp_path):
 
 def test_requested_clip_duration_compresses_and_clamps():
     # @spec REPLAY-LIB-002 — real_elapsed / speed_factor, snapped to {5, 10}.
-    assert replay.requested_clip_duration(0.0, 30.0, speed_factor=10) == 5    # 3s -> floor 5
-    assert replay.requested_clip_duration(0.0, 90.0, speed_factor=10) == 10   # 9s -> nearest 10
+    assert replay.requested_clip_duration(0.0, 30.0, speed_factor=10) == 5  # 3s -> floor 5
+    assert replay.requested_clip_duration(0.0, 90.0, speed_factor=10) == 10  # 9s -> nearest 10
     assert replay.requested_clip_duration(0.0, 600.0, speed_factor=10) == 10  # 60s -> clamp 10
-    assert replay.requested_clip_duration(0.0, 70.0, speed_factor=10) == 5    # 7s -> nearest 5
-    assert replay.requested_clip_duration(None, None) == 5                    # missing -> min
-    assert replay.requested_clip_duration(5.0, 5.0) == 5                      # zero elapsed -> min
+    assert replay.requested_clip_duration(0.0, 70.0, speed_factor=10) == 5  # 7s -> nearest 5
+    assert replay.requested_clip_duration(None, None) == 5  # missing -> min
+    assert replay.requested_clip_duration(5.0, 5.0) == 5  # zero elapsed -> min
 
 
 # --- REPLAY-KEY-001: keyframe selection (pure, no browser) ---
@@ -375,7 +451,11 @@ def _keyframe_snapshots() -> list[dict]:
     return [
         {"seq": 0, "ts": 0.0, "entities": a},
         {"seq": 1, "ts": 1.0, "entities": b},
-        {"seq": 2, "ts": 2.0, "entities": b},  # unchanged from seq 1 -> dropped as a state-change frame
+        {
+            "seq": 2,
+            "ts": 2.0,
+            "entities": b,
+        },  # unchanged from seq 1 -> dropped as a state-change frame
         {"seq": 3, "ts": 3.0, "entities": c},
     ]
 
@@ -387,10 +467,18 @@ def test_replay_meta_cli_duration_and_safe_video_url(tmp_path, capsys):
     from scripts import replay_meta
 
     inc = tmp_path / "inc.json"
-    inc.write_text(json.dumps({
-        "start_ts": 0.0, "end_ts": 90.0, "speed_factor": 10, "video_url": None,
-        "snapshots": [{"seq": 0}],
-    }), encoding="utf-8")
+    inc.write_text(
+        json.dumps(
+            {
+                "start_ts": 0.0,
+                "end_ts": 90.0,
+                "speed_factor": 10,
+                "video_url": None,
+                "snapshots": [{"seq": 0}],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     assert replay_meta.main(["replay_meta", "duration", str(inc)]) == 0
     assert capsys.readouterr().out.strip() == "10"  # 90/10 = 9 -> nearest allowed (10)

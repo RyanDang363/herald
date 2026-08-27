@@ -17,7 +17,13 @@ from er_twin.events.helpers import (
 
 class DischargeHandler(EventHandler):
     key = "discharge"
-    keywords = ("discharge patient", "patient discharge", "outtake", "ready to go home", "discharge")
+    keywords = (
+        "discharge patient",
+        "patient discharge",
+        "outtake",
+        "ready to go home",
+        "discharge",
+    )
     mock_reply = "Please provide the patient MRN (e.g. MRN-0002) to begin discharge."
     incident_type = "patient_discharge"
     visual_style = "calm, resolved ER discharge sequence"
@@ -29,11 +35,14 @@ class DischargeHandler(EventHandler):
         mrn = extract_mrn(dctx.cmd.text)
         if not mrn:
             dctx.session_pending[dctx.cmd.session_id] = PendingProposal(
-                kind="awaiting_mrn", event_type="discharge",
-                sender=dctx.cmd.sender, session_id=dctx.cmd.session_id,
+                kind="awaiting_mrn",
+                event_type="discharge",
+                sender=dctx.cmd.sender,
+                session_id=dctx.cmd.session_id,
             )
             await dctx.send_chat(
-                dctx.ctx, dctx.cmd.sender,
+                dctx.ctx,
+                dctx.cmd.sender,
                 "Please provide the patient MRN to discharge.",
                 end_session=False,
             )
@@ -45,7 +54,8 @@ class DischargeHandler(EventHandler):
             mrn = extract_mrn(dctx.cmd.text) or normalize_text(dctx.cmd.text).upper()
             if not mrn.startswith("MRN-"):
                 await dctx.send_chat(
-                    dctx.ctx, pending.sender,
+                    dctx.ctx,
+                    pending.sender,
                     "I need a valid MRN (e.g. MRN-0002). Please try again.",
                     end_session=False,
                 )
@@ -57,8 +67,11 @@ class DischargeHandler(EventHandler):
         return True
 
     async def _propose_discharge(
-        self, dctx: DispatchContext, mrn: str,
-        sender: str | None = None, session_id: str | None = None,
+        self,
+        dctx: DispatchContext,
+        mrn: str,
+        sender: str | None = None,
+        session_id: str | None = None,
     ) -> bool:
         store = dctx.store
         assert store is not None
@@ -89,21 +102,32 @@ class DischargeHandler(EventHandler):
         )
 
         pending = PendingProposal(
-            kind="discharge_confirm", event_type="discharge",
-            sender=user, session_id=sid, mrn=mrn, name=plan["name"],
-            patient_id=plan["patient_id"], proposed=proposed,
+            kind="discharge_confirm",
+            event_type="discharge",
+            sender=user,
+            session_id=sid,
+            mrn=mrn,
+            name=plan["name"],
+            patient_id=plan["patient_id"],
+            proposed=proposed,
             active_event_id=evt_id,
         )
         dctx.session_pending[sid] = pending
         msg = format_discharge_proposal(
-            plan["name"], mrn, bed_id,
-            proposed.get("nurse_id"), proposed.get("doctor_id"),
-            display, available=available,
+            plan["name"],
+            mrn,
+            bed_id,
+            proposed.get("nurse_id"),
+            proposed.get("doctor_id"),
+            display,
+            available=available,
         )
         await dctx.send_chat(dctx.ctx, user, msg, end_session=False)
         return True
 
-    async def _confirm_discharge(self, dctx: DispatchContext, pending: PendingProposal, text: str) -> bool:
+    async def _confirm_discharge(
+        self, dctx: DispatchContext, pending: PendingProposal, text: str
+    ) -> bool:
         store = dctx.store
         assert store is not None
         proposed = dict(pending.proposed)
@@ -116,7 +140,8 @@ class DischargeHandler(EventHandler):
                     proposed["doctor_id"] = override["doctor_id"]
             else:
                 await dctx.send_chat(
-                    dctx.ctx, pending.sender,
+                    dctx.ctx,
+                    pending.sender,
                     'Reply "confirm" to discharge, or "assign nurse2 doc1" to override sign-off staff.',
                     end_session=False,
                 )
@@ -124,25 +149,41 @@ class DischargeHandler(EventHandler):
 
         dctx.session_pending.pop(pending.session_id, None)
         outcome = commit_discharge(
-            store, pending.patient_id,
-            proposed.get("nurse_id"), proposed.get("doctor_id"),
+            store,
+            pending.patient_id,
+            proposed.get("nurse_id"),
+            proposed.get("doctor_id"),
         )
 
         if pending.active_event_id:
             promoted = active_events.confirm_pending_proposal(
-                store, pending.active_event_id, outcome["confirmation"], new_type="discharge",
+                store,
+                pending.active_event_id,
+                outcome["confirmation"],
+                new_type="discharge",
             )
-            evt_id = pending.active_event_id if promoted else active_events.create_active_event(
-                store, "discharge", outcome["confirmation"], patient_id=pending.patient_id,
+            evt_id = (
+                pending.active_event_id
+                if promoted
+                else active_events.create_active_event(
+                    store,
+                    "discharge",
+                    outcome["confirmation"],
+                    patient_id=pending.patient_id,
+                )
             )
         else:
             evt_id = active_events.create_active_event(
-                store, "discharge", outcome["confirmation"], patient_id=pending.patient_id,
+                store,
+                "discharge",
+                outcome["confirmation"],
+                patient_id=pending.patient_id,
             )
 
         dctx.record_memory(dctx.ctx, outcome["confirmation"])
         await dctx.send_chat(
-            dctx.ctx, pending.sender,
+            dctx.ctx,
+            pending.sender,
             f"{outcome['confirmation']}\nCurrent event {evt_id} — resolve to free bed and staff.",
         )
         return True

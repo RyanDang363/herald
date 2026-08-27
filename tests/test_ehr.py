@@ -32,6 +32,7 @@ from er_twin.storage import InMemoryStore
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _write_master(path: pathlib.Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as fh:
@@ -66,6 +67,7 @@ _SAMPLE_EHR = {
 # load_master / get_ehr_record
 # ---------------------------------------------------------------------------
 
+
 def test_load_master_returns_records(tmp_path: pathlib.Path) -> None:
     master_file = tmp_path / "ehr_master.json"
     _write_master(master_file, _SAMPLE_EHR)
@@ -98,6 +100,7 @@ def test_get_ehr_record_missing_returns_none(tmp_path: pathlib.Path) -> None:
 # next_mrn
 # ---------------------------------------------------------------------------
 
+
 def test_next_mrn_empty_master_returns_0001(tmp_path: pathlib.Path) -> None:
     master_file = tmp_path / "ehr_master.json"
     _write_master(master_file, {})
@@ -118,6 +121,7 @@ def test_next_mrn_missing_file_returns_0001(tmp_path: pathlib.Path) -> None:
 # ---------------------------------------------------------------------------
 # register_new_patient
 # ---------------------------------------------------------------------------
+
 
 def test_register_new_patient_writes_and_caches(tmp_path: pathlib.Path) -> None:
     # @spec EHR-IDEM-002
@@ -155,6 +159,7 @@ def test_register_new_patient_idempotent(tmp_path: pathlib.Path) -> None:
 # build_live_record — returning patient
 # ---------------------------------------------------------------------------
 
+
 def test_build_live_record_returning_patient(tmp_path: pathlib.Path) -> None:
     # @spec EHR-FLOW-003
     master_file = tmp_path / "ehr_master.json"
@@ -183,6 +188,7 @@ def test_build_live_record_does_not_set_patient_id_or_status(tmp_path: pathlib.P
 # build_live_record — new patient (unknown MRN)
 # ---------------------------------------------------------------------------
 
+
 def test_build_live_record_new_patient_unknown_mrn(tmp_path: pathlib.Path) -> None:
     # @spec EHR-FLOW-004
     master_file = tmp_path / "ehr_master.json"
@@ -200,6 +206,7 @@ def test_build_live_record_new_patient_unknown_mrn(tmp_path: pathlib.Path) -> No
 # ---------------------------------------------------------------------------
 # build_live_record — walk-in with blank MRN (mint)
 # ---------------------------------------------------------------------------
+
 
 def test_build_live_record_mints_mrn_when_blank(tmp_path: pathlib.Path) -> None:
     # @spec EHR-FLOW-005
@@ -228,6 +235,7 @@ def test_build_live_record_mints_mrn_when_none(tmp_path: pathlib.Path) -> None:
 # build_live_record — missing fixture (graceful fallback)
 # ---------------------------------------------------------------------------
 
+
 def test_build_live_record_missing_fixture_treats_as_new(tmp_path: pathlib.Path) -> None:
     # @spec EHR-ERR-001
     missing = tmp_path / "does_not_exist.json"
@@ -241,6 +249,7 @@ def test_build_live_record_missing_fixture_treats_as_new(tmp_path: pathlib.Path)
 # ---------------------------------------------------------------------------
 # find_active_patient_by_mrn
 # ---------------------------------------------------------------------------
+
 
 def test_find_active_patient_by_mrn_found(tmp_path: pathlib.Path) -> None:
     # @spec INTAKE-IDEM-001
@@ -285,6 +294,7 @@ def test_find_active_patient_by_mrn_empty_store() -> None:
 # ---------------------------------------------------------------------------
 # build_ehr.py CSV parsing (small inline unit test)
 # ---------------------------------------------------------------------------
+
 
 def test_build_ehr_synthetic_produces_correct_structure() -> None:
     """build_synthetic generates PATIENT_COUNT records with the expected keys."""

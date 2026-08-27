@@ -38,7 +38,9 @@ async def on_ping(ctx: Context, sender: str, msg: PingRequest):
 
 @orchestrator.on_message(PingResponse)
 async def on_pong(ctx: Context, sender: str, msg: PingResponse):
-    ctx.logger.info(f"orchestrator received PingResponse({msg.text!r}) from agent_id={msg.agent_id}")
+    ctx.logger.info(
+        f"orchestrator received PingResponse({msg.text!r}) from agent_id={msg.agent_id}"
+    )
     print("ROUND-TRIP OK: in-process Bureau messaging works with a mailbox orchestrator")
     os._exit(0)
 

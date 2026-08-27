@@ -55,7 +55,7 @@ class InMemoryStore(StorageInterface):
 
     def list_ids(self, entity: str) -> list[str]:
         prefix = f"er:{entity}:"
-        return [key[len(prefix):] for key in self._data if key.startswith(prefix)]
+        return [key[len(prefix) :] for key in self._data if key.startswith(prefix)]
 
     def publish(self, channel: str, msg: str) -> None:
         self._channels.setdefault(channel, []).append(msg)

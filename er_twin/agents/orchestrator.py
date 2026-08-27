@@ -45,7 +45,11 @@ from er_twin.addresses import seed_for
 from er_twin.agents import admissions, bed, doctor, nurse, patient, triage
 from er_twin.config import settings
 from er_twin.display import display
-from er_twin.events.base import DispatchContext, PendingCommand as EventPendingCommand, PendingProposal
+from er_twin.events.base import (
+    DispatchContext,
+    PendingCommand as EventPendingCommand,
+    PendingProposal,
+)
 from er_twin.events.registry import EVENT_REGISTRY, all_keywords, mock_replies
 from er_twin.memory import MemoryInterface, NoopMemory
 from er_twin.oxygen_coord import (
@@ -90,8 +94,12 @@ MOCK_INTAKE: dict[str, dict] = {
         "name": "Jordan Lee",
         "chief_complaint": "chest pain",
         "vitals": {
-            "heart_rate": 112, "blood_pressure": "156/92", "resp_rate": 22,
-            "spo2": 96, "temperature_f": 98.6, "pain_score": 8,
+            "heart_rate": 112,
+            "blood_pressure": "156/92",
+            "resp_rate": 22,
+            "spo2": 96,
+            "temperature_f": 98.6,
+            "pain_score": 8,
         },
     },
 }
@@ -262,7 +270,11 @@ def _format_intake_confirmation(
 
 
 def run_intake(
-    store: StorageInterface, name: str, chief_complaint: str, vitals: dict, mrn: str = "",
+    store: StorageInterface,
+    name: str,
+    chief_complaint: str,
+    vitals: dict,
+    mrn: str = "",
     on_milestone=None,
 ) -> dict:
     """Run the full intake flow and return the outcome (+ confirmation + milestone log).
@@ -289,10 +301,16 @@ def run_intake(
     # @spec EHR-FLOW-002 — AdmissionsAgent enriches the record from the master EHR before persisting.
     patient_id, record, created = admissions.intake(store, name, chief_complaint, vitals, mrn)
     result: dict = {
-        "patient_id": patient_id, "created": created, "error": None,
-        "acuity": record.get("acuity"), "specialty": record.get("specialty"),
-        "bed_id": record.get("assigned_bed"), "nurse_id": None, "doctor_id": None,
-        "care_team": record.get("care_team", []), "status": record.get("status"),
+        "patient_id": patient_id,
+        "created": created,
+        "error": None,
+        "acuity": record.get("acuity"),
+        "specialty": record.get("specialty"),
+        "bed_id": record.get("assigned_bed"),
+        "nurse_id": None,
+        "doctor_id": None,
+        "care_team": record.get("care_team", []),
+        "status": record.get("status"),
         "milestones": milestones,
     }
 
@@ -441,8 +459,8 @@ orchestrator = Agent(
     handle="er-herald",
     description=(
         "Autonomous digital twin of a hospital emergency room, built on Fetch.ai uAgents. "
-        "Chat to drive it: \"patient intake MRN-0005\", "
-        "\"Bed 3's patient oxygen is dropping\", or \"Show me what's happening in the ER\". "
+        'Chat to drive it: "patient intake MRN-0005", '
+        '"Bed 3\'s patient oxygen is dropping", or "Show me what\'s happening in the ER". '
         "Synthetic demo data only — no real patient health information."
     ),
 )
@@ -512,8 +530,12 @@ def _recall_memory(query: str) -> list[str]:
 
 
 def _log_milestone(
-    store: StorageInterface, event: str, actor: str, action: str,
-    target: str | None = None, **detail,
+    store: StorageInterface,
+    event: str,
+    actor: str,
+    action: str,
+    target: str | None = None,
+    **detail,
 ) -> dict | None:
     """Publish a milestone line AND capture a full-state snapshot of the store — best-effort.
 
@@ -540,8 +562,13 @@ def _log_milestone(
 
 
 def _record_milestone(
-    buf: list[dict], store: StorageInterface, event: str, actor: str, action: str,
-    target: str | None = None, **detail,
+    buf: list[dict],
+    store: StorageInterface,
+    event: str,
+    actor: str,
+    action: str,
+    target: str | None = None,
+    **detail,
 ) -> dict | None:
     """`_log_milestone` then append to `buf` only when a line was produced (skips a best-effort miss)."""
     line = _log_milestone(store, event, actor, action, target, **detail)
@@ -571,8 +598,13 @@ def _emit_replay(ctx: Context, event: str, lines: list[dict]) -> str | None:
         # (with per-snapshot ts + library metadata) for the replay page and the /library.
         snapshots = _replay.snapshots_for(ln["seq"] for ln in lines)
         timeline = replay.export_incident_timeline(
-            snapshots, incident_id, incident_type, brief["title"], brief["summary"],
-            display=display, out_dir=REPLAY_OUT_DIR,
+            snapshots,
+            incident_id,
+            incident_type,
+            brief["title"],
+            brief["summary"],
+            display=display,
+            out_dir=REPLAY_OUT_DIR,
         )
         if timeline is not None:
             ctx.logger.info(
@@ -583,7 +615,6 @@ def _emit_replay(ctx: Context, event: str, lines: list[dict]) -> str | None:
     except Exception:  # noqa: BLE001 — replay export is non-critical; never crash the command.
         ctx.logger.exception("replay export failed")
         return None
-
 
 
 def _new_flow_id(kind: str) -> str:
@@ -603,6 +634,7 @@ def _drop_pending_ping(flow_id: str) -> None:
         else:
             kept.append((fid, sid))
     _pending_ping_sessions = kept
+
 
 chat = Protocol(spec=chat_protocol_spec)
 
@@ -627,7 +659,9 @@ async def handle_chat(ctx: Context, sender: str, msg: ChatMessage):
     # @spec ORCH-CHAT-002 — always acknowledge first.
     await ctx.send(
         sender,
-        ChatAcknowledgement(timestamp=datetime.now(tz=timezone.utc), acknowledged_msg_id=msg.msg_id),
+        ChatAcknowledgement(
+            timestamp=datetime.now(tz=timezone.utc), acknowledged_msg_id=msg.msg_id
+        ),
     )
 
     text = " ".join(item.text for item in msg.content if isinstance(item, TextContent)).strip()
@@ -641,7 +675,9 @@ async def handle_chat(ctx: Context, sender: str, msg: ChatMessage):
     if _command_gate.is_busy():
         _command_gate.enqueue(cmd)
         await _send_chat(
-            ctx, sender, "I'm finishing the current ER action — I'll handle that next.",
+            ctx,
+            sender,
+            "I'm finishing the current ER action — I'll handle that next.",
             end_session=False,
         )
         return
@@ -675,7 +711,9 @@ async def _begin_command(ctx: Context, cmd: PendingChatCommand) -> None:
 
 def _make_dctx(ctx: Context, cmd: PendingChatCommand, flow_id: str) -> DispatchContext:
     """Build the shared dispatch context passed to event handlers."""
-    ep = EventPendingCommand(sender=cmd.sender, session_id=cmd.session_id, text=cmd.text, flow_id=flow_id)
+    ep = EventPendingCommand(
+        sender=cmd.sender, session_id=cmd.session_id, text=cmd.text, flow_id=flow_id
+    )
     return DispatchContext(
         ctx=ctx,
         cmd=ep,
@@ -737,7 +775,9 @@ async def _watchdog(ctx: Context, flow_id: str) -> None:
     _cleanup_oxygen(flow_id)
     _drop_pending_ping(flow_id)
     if sender:
-        await _send_chat(ctx, sender, "That ER action timed out before all agents responded. Please try again.")
+        await _send_chat(
+            ctx, sender, "That ER action timed out before all agents responded. Please try again."
+        )
     await _complete_command(ctx, flow_id)
 
 
@@ -776,17 +816,26 @@ async def _finish_oxygen(ctx: Context, flow_id: str, reply: str) -> None:
 
 @orchestrator.on_message(LowSupplyAlert)
 async def on_low_supply(ctx: Context, sender: str, msg: LowSupplyAlert):
-    await EVENT_REGISTRY["oxygen"].on_low_supply(_make_dctx(ctx, PendingChatCommand(sender=sender, session_id="", text=""), msg.flow_id or ""), msg)
+    await EVENT_REGISTRY["oxygen"].on_low_supply(
+        _make_dctx(
+            ctx, PendingChatCommand(sender=sender, session_id="", text=""), msg.flow_id or ""
+        ),
+        msg,
+    )
 
 
 @orchestrator.on_message(EquipmentLocateResponse)
 async def on_locate(ctx: Context, sender: str, msg: EquipmentLocateResponse):
-    await EVENT_REGISTRY["oxygen"].on_locate(_make_dctx(ctx, PendingChatCommand(sender=sender, session_id="", text=""), msg.flow_id), msg)
+    await EVENT_REGISTRY["oxygen"].on_locate(
+        _make_dctx(ctx, PendingChatCommand(sender=sender, session_id="", text=""), msg.flow_id), msg
+    )
 
 
 @orchestrator.on_message(StaffDispatchResponse)
 async def on_dispatch(ctx: Context, sender: str, msg: StaffDispatchResponse):
-    await EVENT_REGISTRY["oxygen"].on_dispatch(_make_dctx(ctx, PendingChatCommand(sender=sender, session_id="", text=""), msg.flow_id), msg)
+    await EVENT_REGISTRY["oxygen"].on_dispatch(
+        _make_dctx(ctx, PendingChatCommand(sender=sender, session_id="", text=""), msg.flow_id), msg
+    )
 
 
 orchestrator.include(chat, publish_manifest=True)

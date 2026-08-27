@@ -37,7 +37,9 @@ def find_available_nurse(store: StorageInterface) -> str | None:
     return None
 
 
-def assign_nurse(store: StorageInterface, nurse_id: str, patient_id: str, bed_id: str | None = None) -> bool:
+def assign_nurse(
+    store: StorageInterface, nurse_id: str, patient_id: str, bed_id: str | None = None
+) -> bool:
     """Assign a nurse to a patient; the nurse goes unavailable (single-patient capacity).
 
     @spec INTAKE-FLOW-008 — set unavailable, add the patient to assignments, return accepted.
@@ -73,8 +75,7 @@ def dispatch_nurse(store: StorageInterface, nurse_id: str, bed_id: str) -> bool:
         return True
     store.update(
         nurse_key(nurse_id),
-        {"available": False, "location": bed_id,
-         "assignments": assignments + [task]},
+        {"available": False, "location": bed_id, "assignments": assignments + [task]},
     )
     return True
 

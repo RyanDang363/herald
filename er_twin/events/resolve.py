@@ -28,8 +28,9 @@ class ResolveHandler(EventHandler):
                 return True
             listing = "\n".join(f"  • {e['id']}: {e['summary'][:60]}" for e in events)
             await dctx.send_chat(
-                dctx.ctx, dctx.cmd.sender,
-                f"Current events:\n{listing}\nReply \"resolve evt-0001\" to close one.",
+                dctx.ctx,
+                dctx.cmd.sender,
+                f'Current events:\n{listing}\nReply "resolve evt-0001" to close one.',
                 end_session=False,
             )
             return True
@@ -44,7 +45,9 @@ class ResolveHandler(EventHandler):
         assert store is not None
         rec = active_events.resolve_active_event(store, event_id, dctx.replay)
         if rec is None:
-            await dctx.send_chat(dctx.ctx, dctx.cmd.sender, f"Event {event_id} not found or already resolved.")
+            await dctx.send_chat(
+                dctx.ctx, dctx.cmd.sender, f"Event {event_id} not found or already resolved."
+            )
             return True
         if rec.get("type") == "discharge" and rec.get("patient_id"):
             release_patient_resources(store, rec["patient_id"])

@@ -44,11 +44,34 @@ def _write_incident(replay_dir, incident_id="patient_intake-0001", **overrides) 
         "involved": ["Jordan Lee", "bed-1", "Nurse Maya"],
         "video_url": None,
         "snapshots": [
-            {"seq": 0, "ts": 1000.0, "action": "intake_received", "actor": "orchestrator",
-             "target": None, "entities": {"patients": [], "beds": [], "nurses": [], "doctors": [], "equipment": []}},
-            {"seq": 1, "ts": 1006.0, "action": "bed_assigned", "actor": "bed", "target": "bed1",
-             "entities": {"patients": [{"id": "p1", "status": "admitted", "assigned_bed": "bed1"}],
-                          "beds": [{"id": "bed1", "status": "occupied"}], "nurses": [], "doctors": [], "equipment": []}},
+            {
+                "seq": 0,
+                "ts": 1000.0,
+                "action": "intake_received",
+                "actor": "orchestrator",
+                "target": None,
+                "entities": {
+                    "patients": [],
+                    "beds": [],
+                    "nurses": [],
+                    "doctors": [],
+                    "equipment": [],
+                },
+            },
+            {
+                "seq": 1,
+                "ts": 1006.0,
+                "action": "bed_assigned",
+                "actor": "bed",
+                "target": "bed1",
+                "entities": {
+                    "patients": [{"id": "p1", "status": "admitted", "assigned_bed": "bed1"}],
+                    "beds": [{"id": "bed1", "status": "occupied"}],
+                    "nurses": [],
+                    "doctors": [],
+                    "equipment": [],
+                },
+            },
         ],
     }
     record.update(overrides)
@@ -299,11 +322,15 @@ def test_api_replay_rejects_unsafe_id(replay_dir):
 
 # @spec REPLAY-LIB-004 — the library lists every incident in out/replay/ with its metadata + video
 def test_api_library_lists_incidents(auth_client, replay_dir):
-    _write_incident(replay_dir, "patient_intake-0001",
-                    video_url="https://cdn.pika.test/clip1.mp4")
-    _write_incident(replay_dir, "low_oxygen_alert-0001", incident_type="low_oxygen_alert",
-                    title="Low-oxygen response — bed-3", summary="O2 swapped on bed-3.",
-                    involved=["bed-3", "Nurse Chen"])
+    _write_incident(replay_dir, "patient_intake-0001", video_url="https://cdn.pika.test/clip1.mp4")
+    _write_incident(
+        replay_dir,
+        "low_oxygen_alert-0001",
+        incident_type="low_oxygen_alert",
+        title="Low-oxygen response — bed-3",
+        summary="O2 swapped on bed-3.",
+        involved=["bed-3", "Nurse Chen"],
+    )
     body = auth_client.get("/api/library").json()
     ids = {e["incident_id"] for e in body["incidents"]}
     assert ids == {"patient_intake-0001", "low_oxygen_alert-0001"}
@@ -388,7 +415,9 @@ def test_sim_timeline_evolves_and_attributes_agents():
 def pika_on(monkeypatch):
     """Enable the Pika action and run jobs inline (no thread, no subprocess). Resets the registry."""
     monkeypatch.setattr(server.settings, "dashboard_allow_pika", True)
-    monkeypatch.setattr(pika_jobs, "_spawn", lambda target: target())  # run the job body synchronously
+    monkeypatch.setattr(
+        pika_jobs, "_spawn", lambda target: target()
+    )  # run the job body synchronously
     pika_jobs.reset()
     yield
     pika_jobs.reset()

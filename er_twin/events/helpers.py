@@ -18,6 +18,8 @@ def strip_agent_mention(text: str) -> str:
 def extract_mrn(text: str) -> str:
     match = _MRN_RE.search(text)
     return match.group(0).upper() if match else ""
+
+
 _CONFIRM_RE = re.compile(r"^\s*(confirm|yes|approved?|ok)\s*\.?\s*$", re.IGNORECASE)
 _ASSIGN_RE = re.compile(
     r"\bassign\s+(?:(?:doc(?:tor)?|dr)\s*(\w+)|(\w+))\s+(?:nurse\s*(\w+)|(\w+))\s+(?:bed\s*(\w+)|(\w+))",
@@ -27,9 +29,20 @@ _BED_RE = re.compile(r"\bbed\s*(\d+)\b", re.IGNORECASE)
 _NURSE_RE = re.compile(r"\bnurse\s*(\d+)\b", re.IGNORECASE)
 _DOC_RE = re.compile(r"\b(?:doc(?:tor)?|dr)\s*(\d+)\b", re.IGNORECASE)
 _COMPLAINT_KEYWORDS = (
-    "chest pain", "shortness of breath", "abdominal pain", "headache",
-    "ankle", "fracture", "laceration", "fever", "nausea", "injury",
-    "pain", "bleeding", "dizziness", "weakness",
+    "chest pain",
+    "shortness of breath",
+    "abdominal pain",
+    "headache",
+    "ankle",
+    "fracture",
+    "laceration",
+    "fever",
+    "nausea",
+    "injury",
+    "pain",
+    "bleeding",
+    "dizziness",
+    "weakness",
 )
 
 
@@ -66,7 +79,9 @@ def extract_complaint(text: str, mrn: str = "") -> str:
     cleaned = normalize_text(text)
     if mrn:
         cleaned = re.sub(re.escape(mrn), "", cleaned, flags=re.IGNORECASE).strip()
-    cleaned = re.sub(r"\b(intake|admit|patient|mrn)\b", "", cleaned, flags=re.IGNORECASE).strip(" ,:-")
+    cleaned = re.sub(r"\b(intake|admit|patient|mrn)\b", "", cleaned, flags=re.IGNORECASE).strip(
+        " ,:-"
+    )
     lowered = cleaned.lower()
     for kw in _COMPLAINT_KEYWORDS:
         if kw in lowered:
@@ -114,8 +129,13 @@ def parse_assignment_override(text: str) -> dict[str, str | None]:
 
 
 def format_proposal(
-    name: str, mrn: str, acuity: int, specialty: str,
-    bed_id: str | None, nurse_id: str | None, doctor_id: str | None,
+    name: str,
+    mrn: str,
+    acuity: int,
+    specialty: str,
+    bed_id: str | None,
+    nurse_id: str | None,
+    doctor_id: str | None,
     display,
     available: dict | None = None,
 ) -> str:
@@ -129,8 +149,7 @@ def format_proposal(
     beds = available.get("beds", [])
     if beds:
         bed_opts = ", ".join(
-            f"{b['id']} ({b['specialty']}){' ★' if b['id'] == bed_id else ''}"
-            for b in beds
+            f"{b['id']} ({b['specialty']}){' ★' if b['id'] == bed_id else ''}" for b in beds
         )
         lines.append(f"Beds available: {bed_opts}")
     else:
@@ -140,8 +159,7 @@ def format_proposal(
     nurses = available.get("nurses", [])
     if nurses:
         nurse_opts = ", ".join(
-            f"{display(n['id'])}{' ★' if n['id'] == nurse_id else ''}"
-            for n in nurses
+            f"{display(n['id'])}{' ★' if n['id'] == nurse_id else ''}" for n in nurses
         )
         lines.append(f"Nurses available: {nurse_opts}")
     else:
@@ -162,7 +180,7 @@ def format_proposal(
     lines.append("")
     lines.append("★ = recommended.")
     lines.append("→ Pick interactively: http://localhost:8050  (Current Events tab)")
-    lines.append("→ Or reply here:  \"confirm\"  or  \"assign doc2 nurse2 bed3\"")
+    lines.append('→ Or reply here:  "confirm"  or  "assign doc2 nurse2 bed3"')
     return "\n".join(lines)
 
 
@@ -207,5 +225,5 @@ def format_discharge_proposal(
     lines.append("")
     lines.append("★ = recommended (current care team).")
     lines.append("→ Pick interactively: http://localhost:8050  (Current Events tab)")
-    lines.append("→ Or reply here:  \"confirm\"  or  \"assign nurse2 doc1\"")
+    lines.append('→ Or reply here:  "confirm"  or  "assign nurse2 doc1"')
     return "\n".join(lines)

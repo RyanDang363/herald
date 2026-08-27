@@ -25,8 +25,14 @@ def _admitted_patient(store: InMemoryStore, mrn: str = "MRN-0001") -> dict:
     """Admit a patient end-to-end (plan → commit) and return the commit outcome."""
     plan = plan_intake_proposal(store, "Casey Lee", "chest pain", synthesize_vitals(mrn), mrn)
     outcome = commit_full_intake(
-        store, "Casey Lee", "chest pain", synthesize_vitals(mrn), mrn,
-        plan["proposed"]["bed_id"], plan["proposed"]["nurse_id"], plan["proposed"]["doctor_id"],
+        store,
+        "Casey Lee",
+        "chest pain",
+        synthesize_vitals(mrn),
+        mrn,
+        plan["proposed"]["bed_id"],
+        plan["proposed"]["nurse_id"],
+        plan["proposed"]["doctor_id"],
     )
     return outcome
 
